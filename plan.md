@@ -84,16 +84,14 @@ Implementation notes:
 
 ### Phase 6: Post-MVP - Deployment Settings and App Setting Automation
 
-- [ ] Add `infrastructure/azure/deployment-settings.json` to `ucdavis/web-app-template`.
-- [ ] Add `scripts/sync-deployment-settings.mjs` and package scripts `deployment-settings:sync` and `deployment-settings:check`.
-- [ ] Add generated-region markers across workflow, Bicep, deploy script, and customization docs.
-- [ ] Populate the initial contract from existing deploy variables/secrets.
-- [ ] Verify sync output preserves current deployment behavior.
-- [ ] Implement the deployment settings contract reader and generated deploy surface validation.
+- [ ] Verify the trusted template includes required deployment settings files, generated-region markers, and package scripts.
+- [ ] Run `npm run deployment-settings:check` before relying on the template's generated deploy surfaces.
+- [ ] Read and resolve `deployment-settings-defaults.json` plus the app-owned `deployment-settings.json` overlay before `github env init`, `doctor`, or `app-setting add` uses settings.
+- [ ] Implement the deployment settings contract reader and generated deploy surface validation against the resolved settings.
 - [ ] Implement `caes-app app-setting add <app-setting-name>`.
-- [ ] Edit only `infrastructure/azure/deployment-settings.json` directly for setting additions.
-- [ ] Invoke the template sync tool to update generated workflow, Bicep, script, and documentation regions.
-- [ ] Preview contract, generated file, and GitHub environment variable/secret changes before applying.
+- [ ] Edit only the app-owned `infrastructure/azure/deployment-settings.json` overlay directly for setting additions.
+- [ ] Invoke `npm run deployment-settings:sync` to update generated workflow and deploy script regions.
+- [ ] Preview overlay, generated file, and GitHub environment variable/secret changes before applying.
 
 Implementation notes:
 
@@ -186,8 +184,8 @@ Implementation notes:
   - Azure files may be copied as template content, but MVP `init` does not automate Azure deployment.
 - Post-MVP required template files for deployment automation:
   - `.github/workflows/deploy-azure-appservice.yml`, `.github/workflows/ci-cd.yml`, `infrastructure/azure/main.bicep`, `infrastructure/azure/modules/compute.bicep`, `infrastructure/azure/github-oidc.bicep`, `infrastructure/azure/bicepconfig.json`, and `infrastructure/azure/deploy.sh`.
-  - `infrastructure/azure/deployment-settings.json`.
-  - `scripts/sync-deployment-settings.mjs`, plus package scripts `deployment-settings:sync` and `deployment-settings:check`.
+  - `infrastructure/azure/deployment-settings-defaults.json`, `infrastructure/azure/deployment-settings.json`, and `infrastructure/azure/deployment-settings.schema.json`.
+  - Package scripts `deployment-settings:sync` and `deployment-settings:check`, currently backed by `scripts/sync-deployment-settings.mts`.
 
 ## Manifest Schema
 
@@ -281,25 +279,19 @@ Unreadable GitHub secrets use these states: `missing`, `present-unknown`, `repla
 
 ## Deployment Settings Contract
 
-Deployment settings automation is post-MVP. The template contract should be implemented before `caes-app app-setting add` depends on it. The contract is the only file `caes-app` edits directly for deployment setting additions; generated deploy surfaces are owned by the trusted template sync tool.
+Deployment settings automation is post-MVP. The trusted template now provides the authoritative settings sync interface, and `caes-app` should consume and validate that interface instead of owning generated deployment surfaces directly. The app-owned overlay is the only deployment settings file `caes-app` edits directly for setting additions; generated deploy surfaces are owned by the trusted template sync tool.
 
-- Add contract file: `infrastructure/azure/deployment-settings.json`.
-- Add template sync tool: `scripts/sync-deployment-settings.mjs`.
-- Add template package scripts:
-  - `deployment-settings:sync`: rewrites generated regions from the contract.
-  - `deployment-settings:check`: validates the contract and fails if generated regions are stale.
-- Add generated regions to `.github/workflows/deploy-azure-appservice.yml`, `.github/workflows/ci-cd.yml`, `infrastructure/azure/main.bicep`, `infrastructure/azure/modules/compute.bicep`, `infrastructure/azure/deploy.sh`, and `README.customization.md`.
-- Minimum contract fields:
-  - Document root: `schemaVersion`, the contract schema version.
-  - Setting definition: `key`, stable setting key inside the contract.
-  - Setting definition: `githubSourceName`, GitHub environment variable or secret name.
-  - Setting definition: `appServiceSettingName`, Azure App Service setting name.
-  - Setting definition: `classification`, either `variable` or `secret`.
-  - Setting definition: `valueType`, one of `string`, `int`, or `bool`.
-  - Setting definition: `required`, whether the setting is required for deployment/runtime readiness.
-  - Setting definition: `participatesInBicep`, whether the setting is passed through Bicep infrastructure deployment.
-  - Setting definition: `description`, human-readable purpose and remediation context.
-- A detailed JSON Schema can be implemented with the feature, but the fields above are the required interface.
+- Template-owned defaults live in `infrastructure/azure/deployment-settings-defaults.json`.
+- App-owned changes live in `infrastructure/azure/deployment-settings.json`, with root fields `version`, `disabled`, `overrides`, and `additions`.
+- The local schema `infrastructure/azure/deployment-settings.schema.json` documents both the defaults catalog and overlay shapes.
+- Package scripts are the stable CLI integration points:
+  - `deployment-settings:sync`: rewrites generated regions from resolved defaults plus overlay data.
+  - `deployment-settings:check`: validates settings and fails if generated regions are stale.
+- The current sync-generated targets are `.github/workflows/deploy-azure-appservice.yml`, `.github/workflows/ci-cd.yml`, and `infrastructure/azure/deploy.sh`.
+- Built-in settings are disabled by listing their `githubName` values in `disabled`.
+- Built-in settings are overridden through `overrides`, keyed by `githubName`, with only supported runtime metadata fields changed.
+- New runtime App Service settings are appended to `additions` with `githubName`, `appServiceName`, `classification`, `valueType`, `description`, and optional `id`, `requiredWhen`, `emitWhen`, and `defaultValue`.
+- `caes-app app-setting add <app-setting-name>` adds runtime-only entries to `additions`, invokes `npm run deployment-settings:sync`, and previews both overlay and generated target diffs before applying.
 - Runtime-only settings are applied through App Service app settings without custom Azure resource changes.
 - Settings that change Azure resource shape still require intentional Bicep code changes; `caes-app` must not infer or generate new resource topology from a runtime setting request.
 - Reusable GitHub workflows must keep individual named secrets instead of `secrets: inherit` so secret exposure remains auditable.
