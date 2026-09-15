@@ -18,9 +18,9 @@ export function parseJsonObject(text: string, filePath = 'JSON file'): ParsedJso
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new CommandError(`${filePath} contains invalid JSON: ${message}`, {
+  } catch {
+    // Parser messages can contain excerpts of secret-bearing configuration.
+    throw new CommandError(`${filePath} contains invalid JSON. Fix its JSON syntax and retry.`, {
       code: 'invalid-json',
       exitCode: 2,
     });

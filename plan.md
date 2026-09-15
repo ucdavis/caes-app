@@ -26,24 +26,30 @@ Track progress at the phase and major-deliverable level. Keep the detailed secti
 Implementation notes:
 
 - Implemented with npm, ESM TypeScript, Node `>=22.13.0`, `commander`, `@inquirer/prompts`, `zod`, `execa`, `tsx`, `tsup`, and `vitest`.
-- `init` intentionally stops after parsing and validation with a Phase 2 not-implemented preview/result.
+- At completion of Phase 1, `init` stopped after parsing and validation; Phase 2 now implements the local-only path.
 - Packed smoke tests that install the tarball from a fresh npm cache require running outside the Codex sandbox because sandbox DNS blocks registry fetches and can make nested npm flows appear hung.
 
 ### Phase 2: V1 Init MVP - Local Template Initialization
 
-- [ ] Implement `caes-app init [target-dir]` wizard input mapping and validation.
-- [ ] Implement `--dry-run`, `--yes`, `--json`, `--manifest`, `--local-only`, and `--no-git` behavior for init.
-- [ ] Resolve the template default branch to a commit SHA before mutation and record both values.
-- [ ] For local-only mode, copy/download the trusted `ucdavis/web-app-template` default branch and exclude generated/local artifacts such as `node_modules`, `bin`, `obj`, `publish`, and ignored files.
-- [ ] Apply local file/config patches without sample-code cleanup.
-- [ ] Add optional `--auth-client-id <guid>` input and an interactive prompt for an existing user sign-in application ID; write a supplied value only to git-ignored `server/.env` while preserving unrelated contents.
-- [ ] Provide manual auth setup instructions and redirect URIs derived from the final local configuration; distinguish completed scaffolding from runtime readiness in human and JSON output.
-- [ ] Write committable, non-secret `.caes-app.json` metadata.
-- [ ] In local-only mode, initialize local git by default; support `--no-git` only with `--local-only`.
+- [x] Implement `caes-app init [target-dir]` wizard input mapping and validation.
+- [x] Implement `--dry-run`, `--yes`, `--json`, `--manifest`, `--local-only`, and `--no-git` behavior for init.
+- [x] Resolve the template default branch to a commit SHA before mutation and record both values.
+- [x] For local-only mode, copy/download the trusted `ucdavis/web-app-template` default branch and exclude generated/local artifacts such as `node_modules`, `bin`, `obj`, `publish`, and ignored files.
+- [x] Apply local file/config patches without sample-code cleanup.
+- [x] Always create missing git-ignored `server/.env` from the pinned template example with resolved local settings and remaining placeholders. Accept optional `--auth-client-id <guid>` input and an interactive prompt; preserve existing dotenv contents except for explicit auth updates.
+- [x] Provide manual auth setup instructions and redirect URIs derived from the final local configuration; distinguish completed scaffolding from runtime readiness in human and JSON output.
+- [x] Write committable, non-secret `.caes-app.json` metadata.
+- [x] In local-only mode, initialize local git by default; support `--no-git` only with `--local-only`.
 
 Implementation notes:
 
-- _Record brief implementation-only decisions, discoveries, or follow-up context here as this phase is completed._
+- Phase 2 requires `--local-only`; default GitHub creation remains reserved for Phase 3.
+- Git retrieves the resolved default-branch commit into disposable storage, even with `--no-git`. Only tracked, non-ignored source files are copied; Git metadata and generated artifacts are excluded.
+- Local inputs have flags and wizard prompts. `--yes` accepts supplied values/defaults without prompting; JSON is always noninteractive.
+- Reruns retain the recorded commit, identity, and ports. Managed values use source/generated comparisons; missing files can be restored while unrelated edits and unknown metadata survive.
+- Relative manifest paths are target-relative and must stay inside the target. The manifest is written first to support retries after partial application; each file replacement is atomic.
+- Local initialization uses `main` without staging, commits, or remotes. Auth changes require project ignore coverage and an untracked destination.
+- Offline Git fixtures cover retrieval, initialization, conflicts, auth, resume, and installed-bin/npm-exec smoke execution.
 
 ### Phase 3: V1 Init MVP - GitHub Repository Creation
 
@@ -160,10 +166,10 @@ Implementation notes:
 
 ### MVP Local Auth Configuration
 
-- A supplied client ID creates or updates only `Auth__ClientId` in `server/.env`; validate it as a nonzero GUID. Leave the committed `Auth:ClientId` placeholder unchanged and do not write the local override into `.caes-app.json`.
-- Create a minimal `.env` when absent instead of copying unrelated example settings. When it exists, preserve unrelated settings, comments, and line endings. An identical assignment is `skipped`; an explicitly supplied different ID is a previewed update under the normal MVP file-edit confirmation. Ambiguous duplicate assignments become conflicts.
-- Verify that the destination is git-ignored and, when Git exists, untracked before writing. Unsafe destinations become preview conflicts. Omitting the input preserves local configuration and creates no `.env` file.
-- Show only the targeted auth assignment and operation status in previews. Never display full `.env` contents in human output, JSON, logs, or errors.
+- A supplied client ID fills or updates `Auth__ClientId` in `server/.env`; validate it as a nonzero GUID. Leave the committed `Auth:ClientId` placeholder unchanged and do not write the local override into `.caes-app.json`.
+- Create a missing `.env` from the resolved template revision's `server/.env.example` with mode `0600`; missing examples conflict before application. Fill telemetry service name/namespace from app ID, SMTP/notification names from display name, notification URL from the client port, and DB_CONNECTION from customized development settings. Retain all other defaults, placeholders, comments, ordering, and line endings. Preserve an existing `.env` byte-for-byte when auth is omitted, without backfilling; an explicitly supplied ID updates only its assignment. Identical contents are `skipped`; ambiguous auth edits conflict. Use DotEnv.Core-compatible literals and reject unrepresentable values without exposing their contents.
+- Verify that the destination is git-ignored and, when Git exists, untracked even when auth is omitted. Unsafe destinations become preview conflicts. Always include the dotenv operation in previews and recheck destinations after confirmation; dry runs remain read-only.
+- Show only operation status, safe creation/preservation metadata, and an explicitly supplied auth assignment in previews. Never display full `.env` contents in human output, JSON, logs, or errors.
 - Explain the template's configuration order: base app settings, environment-specific app settings, `.env`, `.env.<environment>`, then process environment variables, with later sources winning. Do not modify the higher-precedence local sources.
 - Include manual sign-in setup instructions and callback URLs derived from the final client/server ports, callback path, and IIS Express configuration. The supplied ID must belong to the user sign-in app registration, not the GitHub deployment managed identity.
 - Successful init means scaffolding completed. Report remaining manual auth setup in both human and JSON output without failing init or claiming runtime readiness. Creating or updating the Entra registration remains post-MVP.
@@ -357,7 +363,7 @@ Deployment settings automation is post-MVP. The trusted template now provides th
 
 ## Testing
 
-The following describes future implementation/release coverage. This documentation-only roadmap refresh adds no tests and runs no test suites.
+The following describes implementation/release coverage. Phase 1 and Phase 2 include automated CLI, filesystem, template retrieval, and packed-binary checks; later-phase scenarios remain roadmap coverage.
 
 ### MVP Tests
 
@@ -386,7 +392,7 @@ The following describes future implementation/release coverage. This documentati
 ## Assumptions
 
 - V1 MVP boundary is init plus optional GitHub repo creation/cloning.
-- MVP init may write an explicitly supplied existing sign-in client ID to git-ignored `server/.env`; omission preserves local configuration and provides manual setup instructions. Scaffolding success does not imply runtime readiness.
+- MVP init always creates a missing git-ignored `server/.env` from the pinned example with known settings and remaining placeholders. An explicitly supplied sign-in client ID fills or updates only the auth assignment; omission preserves existing dotenv files and provides manual setup instructions. Scaffolding success does not imply runtime readiness.
 - GitHub environments, GitHub secrets, Azure, Entra, deployment settings automation, `app-setting add`, and full `doctor` are post-MVP.
 - Default template source is the trusted default branch of GitHub repo `ucdavis/web-app-template`.
 - V1 does not support choosing a template branch, tag, or commit.
@@ -400,4 +406,4 @@ The following describes future implementation/release coverage. This documentati
 - GitHub/Azure changes use "confirm then apply" behavior by default, with `--dry-run` available.
 - `init` performs foundation customization only; sample route/controller cleanup becomes a later command.
 - `init` must not stage, commit, push, or otherwise alter the git index of the generated app; generated customization files may remain uncommitted for developer review.
-- This refresh changes only `plan.md`; no CLI/template code, tests, migrations, cloud resources, or git index changes are part of the update, and no test suites are run.
+- Phase 2 implements the local CLI and its tests. It does not edit template repositories, generate migrations, perform cloud mutations, or stage/commit generated applications.

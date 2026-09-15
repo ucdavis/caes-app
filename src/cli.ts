@@ -8,6 +8,8 @@ import { CLI_NAME, CLI_VERSION, DEFAULT_MANIFEST_PATH } from './constants.js';
 import { CommandError, isCommandError } from './errors.js';
 import { renderJsonPreview, renderHumanPreview, type PreviewPlan } from './preview.js';
 import { redactValue } from './redaction.js';
+import { initialize } from './init.js';
+import type { InitDependencies } from './init-types.js';
 
 export interface CliIo {
   stdout: (text: string) => void;
@@ -21,6 +23,12 @@ export interface InitOptions {
   manifest: string;
   localOnly: boolean;
   noGit: boolean;
+  appId?: string;
+  displayName?: string;
+  serverPort?: string;
+  clientPort?: string;
+  databasePort?: string;
+  authClientId?: string;
 }
 
 type CommanderMvpOptions = Partial<InitOptions> & {
@@ -37,7 +45,7 @@ type CommandErrorWithContext = CommandError & {
   preview?: PreviewPlan;
 };
 
-export function createProgram(io: CliIo): Command {
+export function createProgram(io: CliIo, dependencies: Partial<InitDependencies> = {}): Command {
   const program = new Command();
 
   program.name(CLI_NAME)
@@ -56,12 +64,18 @@ export function createProgram(io: CliIo): Command {
     .command('init')
     .description('create a new app from the trusted CAES web app template')
     .argument('[target-dir]', 'target directory', '.');
-  addMvpOptions(initCommand);
-  initCommand.action((targetDir: string) => {
+  addMvpOptions(initCommand)
+    .option('--app-id <id>', 'lowercase app identifier (defaults to target directory name)')
+    .option('--display-name <name>', 'human-readable application name')
+    .option('--server-port <port>', 'local HTTP server port')
+    .option('--client-port <port>', 'local Vite port')
+    .option('--database-port <port>', 'local SQL host port')
+    .option('--auth-client-id <guid>', 'existing user sign-in application ID; stored only in server/.env');
+  initCommand.action(async (targetDir: string) => {
     const options = collectMvpOptions(initCommand);
     try {
       validateInitOptions(options);
-      throw notImplemented(targetDir, options);
+      await initialize({ targetDir, options }, io, dependencies);
     } catch (error) {
       if (isCommandError(error)) {
         Object.assign(error, { cliOptions: options });
@@ -73,8 +87,8 @@ export function createProgram(io: CliIo): Command {
   return program;
 }
 
-export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Promise<number> {
-  const program = createProgram(io);
+export async function runCli(argv: readonly string[], io: CliIo = defaultIo, dependencies: Partial<InitDependencies> = {}): Promise<number> {
+  const program = createProgram(io, dependencies);
 
   try {
     await program.parseAsync([...argv], { from: 'node' });
@@ -85,14 +99,14 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
     }
 
     if (isCommandError(error)) {
-      emitCommandError(error, io, getErrorOptions(error, program));
+      if (!(error as CommandError & { emitted?: boolean }).emitted) emitCommandError(error, io, getErrorOptions(error, program));
       return error.exitCode;
     }
 
-    const fallback = error instanceof Error ? error.message : String(error);
+    const fallback = 'Command could not complete. Check filesystem permissions and Git access, then retry.';
     emitCommandError(
       new CommandError(fallback, {
-        code: 'not-implemented',
+        code: 'execution-failed',
         exitCode: 1,
       }),
       io,
@@ -113,7 +127,7 @@ function addMvpOptions(command: Command): Command {
     .option('--json', 'emit machine-readable output with sensitive values redacted')
     .option('--manifest <path>', 'read/write a manifest path other than .caes-app.json', DEFAULT_MANIFEST_PATH)
     .option('--local-only', 'perform no GitHub or Azure mutations')
-    .option('--no-git', 'with --local-only, skip git initialization');
+    .option('--no-git', 'with --local-only, skip target git initialization (Git is still required for retrieval)');
 }
 
 function collectMvpOptions(command: Command): InitOptions {
@@ -121,7 +135,7 @@ function collectMvpOptions(command: Command): InitOptions {
   const localOptions = command.opts<CommanderMvpOptions>();
   const merged: CommanderMvpOptions = { ...parentOptions };
 
-  for (const key of ['dryRun', 'yes', 'json', 'manifest', 'localOnly', 'git', 'noGit'] as const) {
+  for (const key of ['dryRun', 'yes', 'json', 'manifest', 'localOnly', 'git', 'noGit', 'appId', 'displayName', 'serverPort', 'clientPort', 'databasePort', 'authClientId'] as const) {
     const source = command.getOptionValueSource(key);
     if (source && source !== 'default') {
       merged[key] = localOptions[key] as never;
@@ -133,6 +147,9 @@ function collectMvpOptions(command: Command): InitOptions {
 
 function normalizeInitOptions(options: CommanderMvpOptions): InitOptions {
   return {
+    ...Object.fromEntries(['appId', 'displayName', 'serverPort', 'clientPort', 'databasePort', 'authClientId']
+      .filter((key) => options[key as keyof InitOptions] !== undefined)
+      .map((key) => [key, options[key as keyof InitOptions]])),
     dryRun: Boolean(options.dryRun),
     yes: Boolean(options.yes),
     json: Boolean(options.json),
@@ -149,41 +166,9 @@ function validateInitOptions(options: InitOptions): void {
       exitCode: 2,
     });
   }
-}
-
-function notImplemented(targetDir: string, options: InitOptions): CommandError {
-  const preview = buildNotImplementedPreview({ targetDir, options });
-  const error = new CommandError('caes-app init is not implemented until Phase 2.', {
-    code: 'not-implemented',
-    exitCode: 1,
-  });
-  Object.assign(error, { preview });
-  return error;
-}
-
-function buildNotImplementedPreview(invocation: InitInvocation): PreviewPlan {
-  return {
-    command: 'init',
-    summary: 'Phase 1 parses and validates init options; Phase 2 will implement template initialization.',
-    steps: [
-      {
-        id: 'init.phase-2-placeholder',
-        type: 'manual-prompt',
-        target: invocation.targetDir,
-        action: 'implement Phase 2 init behavior before applying mutations',
-        source: 'caes-app Phase 1 CLI shell',
-        state: 'skipped',
-        confirmationScope: { kind: 'none' },
-        preview: {
-          status: 'not-implemented',
-          message: 'caes-app init is not implemented until Phase 2.',
-          targetDir: invocation.targetDir,
-          options: invocation.options,
-          previewOnly: invocation.options.json && !invocation.options.yes,
-        },
-      },
-    ],
-  };
+  if (!options.localOnly) {
+    throw new CommandError('GitHub repository creation arrives in Phase 3. Use --local-only for local initialization.', { code: 'not-implemented', exitCode: 1 });
+  }
 }
 
 function getErrorOptions(error: CommandError, program: Command): InitOptions {

@@ -32,12 +32,18 @@ echo "smoke:npx: installing packed tarball" >&2
 expected_version="$(node -p "require('./package.json').version")"
 
 echo "smoke:npx: checking installed bin and offline npm exec" >&2
-node --input-type=module - "$temp_dir" "$expected_version" <<'JS'
+node --input-type=module - "$temp_dir" "$expected_version" "$PWD" <<'JS'
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
+import { mkdir, readFile, stat } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 
-const [tempDir, version] = process.argv.slice(2);
+const [tempDir, version, sourceRoot] = process.argv.slice(2);
+const { createTemplateFixture } = await import(pathToFileURL(join(sourceRoot, 'scripts/init-fixture.mjs')).href);
+const fixtureDirectory = join(tempDir, 'fixture');
+await mkdir(fixtureDirectory);
+const fixture = await createTemplateFixture(fixtureDirectory);
 const bin = join(tempDir, 'node_modules', '.bin', 'caes-app');
 const invocations = [
   { name: 'installed bin', command: bin, prefix: [] },
@@ -48,7 +54,7 @@ for (const invocation of invocations) {
   function run(args, expectedStatus) {
     const result = spawnSync(invocation.command, [...invocation.prefix, ...args], {
       cwd: tempDir,
-      env: { ...process.env, NPM_CONFIG_CACHE: join(tempDir, 'npm-cache') },
+      env: { ...process.env, PATH: fixture.shimDir + delimiter + process.env.PATH, NPM_CONFIG_CACHE: join(tempDir, 'npm-cache') },
       encoding: 'utf8',
       timeout: 30_000,
     });
@@ -73,16 +79,33 @@ for (const invocation of invocations) {
   assert.equal(invalid.stdout, '');
   assert.match(invalid.stderr, /--no-git is only valid with --local-only/);
 
-  const placeholder = run(['init', 'demo-app', '--dry-run', '--json', '--local-only', '--no-git'], 1);
-  assert.equal(placeholder.stderr, '');
-  const payload = JSON.parse(placeholder.stdout);
-  assert.equal(payload.kind, 'result');
-  assert.equal(payload.status, 'error');
-  assert.equal(payload.error.code, 'not-implemented');
-  assert.equal(payload.preview.kind, 'preview');
-  assert.equal(payload.preview.steps[0].preview.targetDir, 'demo-app');
-  assert.equal(payload.preview.steps[0].preview.options.dryRun, true);
-  assert.equal(payload.preview.steps[0].preview.options.noGit, true);
+  const target = join(tempDir, invocation.name === 'installed bin' ? 'bin-app' : 'exec-app');
+  const preview = run(['init', target, '--dry-run', '--json', '--local-only', '--no-git'], 0);
+  assert.equal(preview.stderr, '');
+  const payload = JSON.parse(preview.stdout);
+  assert.equal(payload.kind, 'preview');
+  assert.equal(payload.hasConflicts, false);
+  assert.equal(payload.steps.find(step => step.id === 'server/.env').state, 'created');
+  assert.ok(payload.summary.includes(fixture.sha));
+  await assert.rejects(stat(target), { code: 'ENOENT' });
+  const applied = run(['init', target, '--yes', '--json', '--local-only', '--no-git'], 0);
+  const result = JSON.parse(applied.stdout);
+  assert.equal(result.status, 'success');
+  assert.equal(result.scaffoldingCompleted, true);
+  assert.equal(result.runtimeReadiness, 'unverified');
+  const manifest = JSON.parse(await readFile(join(target, '.caes-app.json'), 'utf8'));
+  assert.equal(manifest.templateSource.resolvedCommitSha, fixture.sha);
+  const envPath = join(target, 'server/.env');
+  const dotenv = await readFile(envPath, 'utf8');
+  assert.ok(dotenv.includes('Auth__ClientId="<client-guid>"'));
+  assert.ok(dotenv.includes(`OTEL_SERVICE_NAME="${manifest.appId}"`));
+  assert.ok(dotenv.includes('Smtp__Password="<smtp_password>"'));
+  assert.equal((await stat(envPath)).mode & 0o777, 0o600);
+  assert.ok(!applied.stdout.includes('LocalDev123!'));
+  await assert.rejects(stat(join(target, '.git')), { code: 'ENOENT' });
+  const resumed = run(['init', target, '--yes', '--json', '--local-only', '--no-git'], 0);
+  assert.ok(JSON.parse(resumed.stdout).steps.every(step => step.state === 'skipped'));
+  assert.equal(await readFile(envPath, 'utf8'), dotenv);
   console.error(`smoke:npx: ${invocation.name} assertions passed`);
 }
 JS

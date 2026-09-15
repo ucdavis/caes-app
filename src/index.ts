@@ -20,3 +20,5 @@ export {
   type PreviewStep,
 } from './preview.js';
 export { redactCommand, redactCommandArgs, redactValue } from './redaction.js';
+export { initialize, collectInputs, validateInputs, manifestDestination } from './init.js';
+export type { InitResult, ResolvedInitInputs, InitDependencies, GitRunner, TemplateSnapshot } from './init-types.js';

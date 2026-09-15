@@ -3,6 +3,9 @@ export type CommandErrorCode =
   | 'invalid-json'
   | 'invalid-manifest'
   | 'future-manifest-schema'
+  | 'conflict'
+  | 'template-error'
+  | 'execution-failed'
   | 'not-implemented';
 
 export class CommandError extends Error {

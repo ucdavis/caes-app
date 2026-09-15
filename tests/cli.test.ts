@@ -54,33 +54,16 @@ describe('cli', () => {
     expect(result.stderr).toContain('--no-git is only valid with --local-only');
   });
 
-  it('emits redacted JSON for parsed init options before Phase 2', async () => {
-    const result = await invoke([
-      '--json',
-      '--dry-run',
-      '--manifest',
-      'custom-manifest.json',
-      '--local-only',
-      '--no-git',
-      'init',
-      'demo-app',
-    ]);
-
+  it('reserves GitHub repository creation for Phase 3', async () => {
+    const result = await invoke(['--json', 'init', 'demo-app']);
     expect(result.code).toBe(1);
-    const payload = JSON.parse(result.stdout);
-    expect(payload.kind).toBe('result');
-    expect(payload.error.code).toBe('not-implemented');
-    expect(payload.preview.kind).toBe('preview');
-    expect(payload.preview.steps[0].preview.targetDir).toBe('demo-app');
-    expect(payload.preview.steps[0].preview.options).toMatchObject({
-      dryRun: true,
-      json: true,
-      manifest: 'custom-manifest.json',
-      localOnly: true,
-      noGit: true,
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      kind: 'error', error: { code: 'not-implemented' },
     });
-    expect(payload.preview.steps[0].preview.previewOnly).toBe(true);
+    expect(result.stdout).toContain('Phase 3');
+    expect(result.stderr).toBe('');
   });
+
 });
 
 describe('CLI entry point', () => {
