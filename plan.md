@@ -8,6 +8,8 @@ The V1 Init MVP is intentionally narrow: create/customize a new app from the def
 
 Default posture: automate foundation setup, make every mutation previewable, keep secrets out of persisted project metadata, and avoid sample-code cleanup in `init`.
 
+Template compatibility reviewed against `ucdavis/web-app-template` commit `bd1e761` on September 15, 2026. This is a review baseline, not a pinned template source; init still resolves the current default branch. MVP init may configure an existing user sign-in client ID locally, while Entra app registration management remains post-MVP.
+
 ## Implementation Roadmap
 
 Track progress at the phase and major-deliverable level. Keep the detailed sections below as the design contract for what each phase must satisfy.
@@ -34,6 +36,8 @@ Implementation notes:
 - [ ] Resolve the template default branch to a commit SHA before mutation and record both values.
 - [ ] For local-only mode, copy/download the trusted `ucdavis/web-app-template` default branch and exclude generated/local artifacts such as `node_modules`, `bin`, `obj`, `publish`, and ignored files.
 - [ ] Apply local file/config patches without sample-code cleanup.
+- [ ] Add optional `--auth-client-id <guid>` input and an interactive prompt for an existing user sign-in application ID; write a supplied value only to git-ignored `server/.env` while preserving unrelated contents.
+- [ ] Provide manual auth setup instructions and redirect URIs derived from the final local configuration; distinguish completed scaffolding from runtime readiness in human and JSON output.
 - [ ] Write committable, non-secret `.caes-app.json` metadata.
 - [ ] In local-only mode, initialize local git by default; support `--no-git` only with `--local-only`.
 
@@ -60,9 +64,12 @@ Implementation notes:
 - [ ] Add `--env test|prod` for environment-scoped commands.
 - [ ] Add environment-scoped secret replacement flags, including `--replace-secret <environment>:<name>` or an equivalent explicit environment-aware form.
 - [ ] Create/update GitHub environments `test` and `prod`.
-- [ ] Set non-secret GitHub environment variables from `.caes-app.json`, selected app config, and later deployment settings contract data.
+- [ ] Verify required deployment settings files, generated-region markers, and package scripts, and run `npm run deployment-settings:check` before relying on generated surfaces.
+- [ ] Implement deployment settings contract reading, defaults/overlay resolution, and generated-surface validation before GitHub environment setup consumes settings; reuse this reader in Phases 6 and 7.
+- [ ] Set non-secret GitHub environment variables from `.caes-app.json`, selected project app config, and resolved deployment settings; do not automatically import local `.env` overrides.
 - [ ] Prompt for individual secrets such as `SQL_ADMIN_PASSWORD`, `SMTP_PASSWORD`, `OTEL_EXPORTER_OTLP_HEADERS`, and `DB_CONNECTION`.
 - [ ] Treat existing GitHub secrets as present but unreadable; replacement requires explicit per-secret, per-environment intent.
+- [ ] Explain that environment variable/secret changes require rerunning Configure Azure before they affect the app; do not automatically dispatch workflows.
 
 Implementation notes:
 
@@ -71,9 +78,11 @@ Implementation notes:
 ### Phase 5: Post-MVP - Azure OIDC and Entra Auth
 
 - [ ] Add command shell and implementation for `caes-app azure oidc bootstrap`.
-- [ ] Run the template's `infrastructure/azure/github-oidc.bicep` per environment.
-- [ ] Require Azure CLI auth, selected subscription/tenant match, and sufficient permissions before OIDC bootstrap.
+- [ ] Run the template's subscription-scoped `infrastructure/azure/github-oidc.bicep` per environment to create the application resource group, user-assigned managed identity, and environment-scoped federated credential.
+- [ ] Require Azure CLI auth, selected subscription/tenant match, resource-group/managed-identity creation permissions, and role-assignment permissions at both the application resource group and shared App Service plan scopes for the default RBAC-enabled bootstrap.
+- [ ] Resolve and validate the existing shared App Service plan, requiring paired overrides and the same plan selection for bootstrap and Configure Azure.
 - [ ] Read deployment outputs and write `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, and `RESOURCE_GROUP` into matching GitHub environments after confirmation.
+- [ ] Record managed identity and role-assignment outputs, and write matching `WEB_PLAN_NAME` / `WEB_PLAN_RESOURCE_GROUP` variables when overriding template defaults.
 - [ ] Add command shell and implementation for `caes-app azure auth-app`.
 - [ ] Require Microsoft Graph/app-registration permissions before Entra app creation or update.
 - [ ] Manage redirect URIs for local dev, IIS Express, App Service hostnames, and custom domains.
@@ -86,14 +95,12 @@ Implementation notes:
 
 ### Phase 6: Post-MVP - Deployment Settings and App Setting Automation
 
-- [ ] Verify the trusted template includes required deployment settings files, generated-region markers, and package scripts.
-- [ ] Run `npm run deployment-settings:check` before relying on the template's generated deploy surfaces.
-- [ ] Read and resolve `deployment-settings-defaults.json` plus the app-owned `deployment-settings.json` overlay before `github env init`, `doctor`, or `app-setting add` uses settings.
-- [ ] Implement the deployment settings contract reader and generated deploy surface validation against the resolved settings.
+- [ ] Reuse Phase 4 contract reading and validation, including `deployment-settings:check`, before editing settings.
 - [ ] Implement `caes-app app-setting add <app-setting-name>`.
 - [ ] Edit only the app-owned `infrastructure/azure/deployment-settings.json` overlay directly for setting additions.
-- [ ] Invoke `npm run deployment-settings:sync` to update generated workflow and deploy script regions.
+- [ ] Invoke `npm run deployment-settings:sync` to update generated Configure Azure workflow and local deploy script regions.
 - [ ] Preview overlay, generated file, and GitHub environment variable/secret changes before applying.
+- [ ] Explain that Configure Azure must run again to apply changed settings; a routine package deployment does not apply them and the CLI does not dispatch workflows automatically.
 
 Implementation notes:
 
@@ -134,6 +141,7 @@ Implementation notes:
   - In GitHub repo mode, creates a new GitHub repo from the template with `gh repo create --template ucdavis/web-app-template`, clones that new project repo into the exact `target-dir` with `git clone`, applies local customization patches inside the clone, and does not run a separate `git init`.
   - In local-only mode, copies/downloads the template default branch directly into `target-dir`, applies local customization patches, writes `.caes-app.json`, and initializes git by default.
   - Collects app name, display name, GitHub owner/repo, visibility, and dev ports.
+  - Accepts init-specific `--auth-client-id <guid>` and an optional interactive prompt for an existing user sign-in application ID; noninteractive runs may omit it.
   - Creates a committable non-secret `.caes-app.json` manifest in the generated app.
   - Updates template identity/config files.
   - Leaves local customization changes uncommitted so the developer can review generated files and choose what to stage and commit.
@@ -144,11 +152,21 @@ Implementation notes:
   - In local-only mode, `target-dir` must be absent or empty unless it contains a matching `.caes-app.json` for a resumable run.
   - Existing non-empty target directories without a matching manifest become preview `conflict` steps.
 - Post-MVP commands:
-  - `caes-app github env init`: creates/updates GitHub environments, variables, and secrets.
-  - `caes-app azure oidc bootstrap`: deploys OIDC infrastructure and writes GitHub environment variables.
+  - `caes-app github env init`: creates/updates GitHub environments, variables, and secrets using resolved deployment settings and project configuration, without automatically uploading local overrides.
+  - `caes-app azure oidc bootstrap`: deploys a user-assigned managed identity, federated credential, and deployment RBAC, then writes matching GitHub environment variables.
   - `caes-app azure auth-app`: creates/updates the user sign-in Entra app registration and related config.
-  - `caes-app app-setting add <app-setting-name>`: adds a runtime App Service setting through the deployment settings contract.
+  - `caes-app app-setting add <app-setting-name>`: adds a runtime App Service setting through the deployment settings contract and reports the required Configure Azure follow-up.
   - `caes-app doctor`: performs read-only local, GitHub, Azure, template, manifest, and runtime readiness checks.
+
+### MVP Local Auth Configuration
+
+- A supplied client ID creates or updates only `Auth__ClientId` in `server/.env`; validate it as a nonzero GUID. Leave the committed `Auth:ClientId` placeholder unchanged and do not write the local override into `.caes-app.json`.
+- Create a minimal `.env` when absent instead of copying unrelated example settings. When it exists, preserve unrelated settings, comments, and line endings. An identical assignment is `skipped`; an explicitly supplied different ID is a previewed update under the normal MVP file-edit confirmation. Ambiguous duplicate assignments become conflicts.
+- Verify that the destination is git-ignored and, when Git exists, untracked before writing. Unsafe destinations become preview conflicts. Omitting the input preserves local configuration and creates no `.env` file.
+- Show only the targeted auth assignment and operation status in previews. Never display full `.env` contents in human output, JSON, logs, or errors.
+- Explain the template's configuration order: base app settings, environment-specific app settings, `.env`, `.env.<environment>`, then process environment variables, with later sources winning. Do not modify the higher-precedence local sources.
+- Include manual sign-in setup instructions and callback URLs derived from the final client/server ports, callback path, and IIS Express configuration. The supplied ID must belong to the user sign-in app registration, not the GitHub deployment managed identity.
+- Successful init means scaffolding completed. Report remaining manual auth setup in both human and JSON output without failing init or claiming runtime readiness. Creating or updating the Entra registration remains post-MVP.
 
 ## CLI Technical Stack
 
@@ -158,6 +176,7 @@ Implementation notes:
 - Use `zod` for manifest, config, and user input validation.
 - Use `execa` for local `git`, `gh`, and `az` command execution.
 - Use structured JSON editing for `package.json`, `appsettings*.json`, `launchSettings.json`, and `.devcontainer/devcontainer.json`.
+- Use a targeted, content-preserving assignment edit for the optional local auth value in `server/.env`; do not treat dotenv files as JSON or expose their full contents.
 - Use `tsx` for development, `tsup` for builds, and `vitest` for tests.
 
 ## Template Source, Trust, and Compatibility
@@ -179,13 +198,14 @@ Implementation notes:
   - Template compatibility checks apply to the source template used by `init` and to later managed projects that contain the required contract files.
   - Existing apps created from `web-app-template` before `caes-app` are unsupported for automation unless manually migrated by a future, separate migration feature.
 - MVP required template files:
-  - Root files: `package.json`, `app.sln`, and `README.customization.md`.
+  - Root files: `package.json`, `app.sln`, `README.customization.md`, and `.gitignore` with coverage for `server/.env`.
   - Client files: `client/package.json`, `client/vite.config.ts`, and `client/package-lock.json`.
   - Server files: `server/appsettings.json`, `server/appsettings.Development.json`, `server/server.csproj`, and `server/Properties/launchSettings.json`.
   - Dev container files: `.devcontainer/devcontainer.json` and `.devcontainer/docker-compose.yml`.
   - Azure files may be copied as template content, but MVP `init` does not automate Azure deployment.
 - Post-MVP required template files for deployment automation:
-  - `.github/workflows/deploy-azure-appservice.yml`, `.github/workflows/ci-cd.yml`, `infrastructure/azure/main.bicep`, `infrastructure/azure/modules/compute.bicep`, `infrastructure/azure/github-oidc.bicep`, `infrastructure/azure/bicepconfig.json`, and `infrastructure/azure/deploy.sh`.
+  - Workflows: `.github/workflows/configure-azure.yml`, `.github/workflows/deploy-azure-appservice.yml`, and `.github/workflows/ci-cd.yml`. Only Configure Azure has sync-generated settings regions.
+  - Infrastructure: `infrastructure/azure/main.bicep`, `infrastructure/azure/github-oidc.bicep`, `infrastructure/azure/deploy.sh`, and their modules, including `compute.bicep`, `sql.bicep`, `deployment-identity.bicep`, `role-assignment.bicep`, and `web-plan-role-assignment.bicep` under `infrastructure/azure/modules/`.
   - `infrastructure/azure/deployment-settings-defaults.json`, `infrastructure/azure/deployment-settings.json`, and `infrastructure/azure/deployment-settings.schema.json`.
   - Package scripts `deployment-settings:sync` and `deployment-settings:check`, currently backed by `scripts/sync-deployment-settings.mts`.
 
@@ -206,18 +226,20 @@ Implementation notes:
 - Non-secret resource handles to record when known:
   - GitHub owner/repo, repo visibility, default branch, and environment names.
   - Azure subscription ID, tenant ID, location, resource group names, and repeatable OIDC bootstrap deployment names.
-  - Deployment identity client IDs/principal IDs returned by `github-oidc.bicep`.
+  - Per-environment shared App Service plan name/resource group and actual web app location, which may differ from the location of other regional resources.
+  - Managed deployment identity name, client/principal IDs, federated credential subject, and resource-group/shared-plan role-assignment IDs returned by `github-oidc.bicep`.
   - User sign-in Entra app object/client IDs, tenant/domain, callback path, and redirect URIs.
   - Template repository, default branch, resolved commit SHA, and CLI schema version.
 - Schema behavior:
   - Preserve unknown fields when reading and writing so future CLI versions can add metadata safely.
   - Reject unsupported future `schemaVersion` values with an upgrade message instead of rewriting the file.
   - Local-only manifests may omit or leave unset cloud sections until later GitHub or Azure commands populate them.
+- The optional MVP `--auth-client-id` value is a per-developer local override, not manifest metadata; managed project auth identifiers are recorded only by later auth management commands. This roadmap refresh does not change the manifest schema version.
 - Never store secrets, connection strings, passwords, PATs, private keys, OIDC credentials, SMTP passwords, OTLP headers, or per-developer local overrides.
 
 ## Validation Before Preview
 
-- Validate app IDs, GitHub owner/repo names, localhost ports, duplicate port conflicts, and target directory state before generating the MVP preview plan.
+- Validate app IDs, GitHub owner/repo names, localhost ports, duplicate port conflicts, target directory state, and any supplied auth client ID and `.env` destination before generating the MVP preview plan.
 - Group validation failures by input area and include actionable remediation text.
 - Preview generated values before mutation, including app IDs, package/repo names, local ports, GitHub owner/repo, repo visibility, project repo default branch, template default branch, and resolved template commit SHA.
 - Do not pre-validate generated Azure resource names in MVP because MVP does not perform Azure deployment.
@@ -247,6 +269,7 @@ All mutating operations are represented as previewable plan steps before executi
 - Redaction rules:
   - Never print secret values in preview, logs, JSON output, errors, command rendering, or test snapshots.
   - Show only presence, source, and status for sensitive values.
+  - For local auth edits, preview only the targeted `Auth__ClientId` assignment and status; never include full `.env` contents or unrelated values, even when the client ID itself is non-secret.
   - Redact sensitive command arguments before display.
   - Secret-bearing `gh` and `az` operations must avoid exposing values in argv or shell command text; use stdin, environment variables, temp files with cleanup, or APIs where supported.
 
@@ -261,6 +284,7 @@ All mutating operations are represented as previewable plan steps before executi
 - Post-MVP re-runs must detect GitHub environments, GitHub variables, GitHub secrets, Azure resource groups, Azure deployments, deployment outputs, and Entra app registrations.
 - GitHub secrets are never read back after creation. Existing secrets are classified as `present-unknown`; replacement requires explicit environment-scoped confirmation or replacement flag.
 - Azure OIDC bootstrap steps must use deterministic deployment names recorded in the manifest so reruns can find prior deployments and reuse compatible outputs when safe.
+- Before reusing bootstrap outputs, verify the current subscription, tenant, repository, GitHub environment, application resource group, managed identity, federated subject, and shared-plan selection. Changed inputs or missing identities/assignments require a new preview; deployment-name matches alone do not establish readiness.
 - Entra app registration updates should match on recorded manifest metadata where available; missing or ambiguous matches become conflicts instead of guessing.
 - Entra redirect URI updates are additive: preserve existing URIs, add missing expected URIs, and preview removals only if a future command explicitly supports cleanup.
 
@@ -273,11 +297,25 @@ All mutating operations are represented as previewable plan steps before executi
 | Environment names | Manifest fields | Safe to display; used by post-MVP GitHub/Azure commands. |
 | Azure subscription, tenant, location, resource group names | Post-MVP manifest fields and GitHub environment variables | Safe to display; selected subscription is verified by post-MVP `doctor`. |
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `RESOURCE_GROUP` | Post-MVP Azure deployment outputs and GitHub environment variables | Safe to display as identifiers; sourced from deployment outputs. |
+| Managed identity name/principal ID and role-assignment IDs | Post-MVP manifest fields | Safe to display; used for bootstrap verification and resume. |
+| `WEB_PLAN_NAME`, `WEB_PLAN_RESOURCE_GROUP` | Post-MVP environment metadata and GitHub environment variables | Safe to display; paired overrides must match bootstrap and configuration. |
 | Auth client/app IDs and redirect URIs | Post-MVP manifest/config fields and GitHub environment variables | Safe to display; managed through `azure auth-app`. |
+| MVP `--auth-client-id` / local `Auth__ClientId` | Git-ignored `server/.env` only | Non-secret and safe to preview as a targeted assignment; never automatically copied to the manifest or GitHub. |
 | `SQL_ADMIN_PASSWORD`, `SMTP_PASSWORD`, `OTEL_EXPORTER_OTLP_HEADERS`, `DB_CONNECTION` | Post-MVP GitHub environment secrets or prompt-only secrets | Never stored in manifest or printed. Existing GitHub values are `present-unknown`. |
 | Local per-developer overrides | Local config only outside manifest | Never written to `.caes-app.json` or GitHub by default. |
 
 Unreadable GitHub secrets use these states: `missing`, `present-unknown`, `replace-requested`, or `conflict`.
+
+## Azure Configuration and Deployment Lifecycle
+
+- Before the first package deployment, create/configure the GitHub environment and user sign-in settings, run the OIDC bootstrap, run the manual Configure Azure workflow, add the resulting App Service hostname's callback URI to the user sign-in registration, and then deploy the app package. Bootstrap supplies the Azure identity/resource-group variables needed by Configure Azure.
+- Configure Azure verifies the application resource group exists, applies Bicep infrastructure, and applies runtime App Service settings using individual variables and secrets from the selected GitHub environment. OIDC bootstrap creates the resource group; Configure Azure does not.
+- Routine CI/CD package deployments use existing infrastructure and configuration. Run Configure Azure again after Bicep, deployment settings, or GitHub environment variables/secrets change; wait for it to finish before deploying the package. CLI commands report this follow-up without dispatching workflows automatically.
+- OIDC bootstrap creates a user-assigned managed identity and environment-scoped GitHub federated credential. By default it grants Contributor on the application resource group and Website Contributor on the exact shared App Service plan. Microsoft Graph/app-registration permissions are required for `azure auth-app`, not this managed-identity bootstrap.
+- Consume outputs only after `deploymentGuardPassed=true`; record `deploymentIdentityName`, `clientId`, `principalId`, `federatedCredentialSubject`, `resourceGroupName`, `subscriptionId`, `tenantId`, `roleAssignmentId`, and `webPlanRoleAssignmentId`. If RBAC is explicitly disabled with `assignRbac=false`, report outstanding manual assignments instead of declaring deployment readiness.
+- Existing shared plans are required in the selected subscription. At the reviewed template revision, defaults are `DefaultPlan2` in `Default-Web-WestUS` for `test` and `Nibbler` in `service-plans-linux` for `prod`. Use template defaults unless both `WEB_PLAN_NAME` and `WEB_PLAN_RESOURCE_GROUP` are supplied; a partial override is a conflict. Use the same resolved pair for bootstrap parameters and Configure Azure variables.
+- Preflight must verify plan existence and bootstrap operator permissions to create the application resource group/managed identity and assign roles at both required scopes. The web app uses the shared plan's region; `AZURE_LOCATION` controls other regional resources, not the web app location.
+- The local `deploy.sh` remains a combined infrastructure/settings/package path with `DEPLOY_INFRA` modes; the GitHub workflow split does not remove those local modes.
 
 ## Deployment Settings Contract
 
@@ -289,14 +327,16 @@ Deployment settings automation is post-MVP. The trusted template now provides th
 - Package scripts are the stable CLI integration points:
   - `deployment-settings:sync`: rewrites generated regions from resolved defaults plus overlay data.
   - `deployment-settings:check`: validates settings and fails if generated regions are stale.
-- The current sync-generated targets are `.github/workflows/deploy-azure-appservice.yml`, `.github/workflows/ci-cd.yml`, and `infrastructure/azure/deploy.sh`.
+- Phase 4 resolves defaults plus overlay and validates generated surfaces before environment setup; Phase 6 and doctor reuse that reader.
+- The current sync-generated targets are `.github/workflows/configure-azure.yml` and `infrastructure/azure/deploy.sh`. CI/CD and the package deployment workflow do not contain generated settings regions.
 - Built-in settings are disabled by listing their `githubName` values in `disabled`.
 - Built-in settings are overridden through `overrides`, keyed by `githubName`, with only supported runtime metadata fields changed.
 - New runtime App Service settings are appended to `additions` with `githubName`, `appServiceName`, `classification`, `valueType`, `description`, and optional `id`, `requiredWhen`, `emitWhen`, and `defaultValue`.
+- `requiredWhen` is context-specific: `always` applies to Configure Azure and every local deployment; `deploy_infra` applies to Configure Azure and local infrastructure deployments; `existing_infra` applies only to local existing-infrastructure deployments; `never` is optional. These checks do not describe routine GitHub package-deployment requirements.
 - `caes-app app-setting add <app-setting-name>` adds runtime-only entries to `additions`, invokes `npm run deployment-settings:sync`, and previews both overlay and generated target diffs before applying.
-- Runtime-only settings are applied through App Service app settings without custom Azure resource changes.
+- Runtime-only settings are applied through App Service app settings by Configure Azure or the local deploy script without custom Azure resource changes. Changing the overlay or GitHub environment alone does not apply settings to a running app.
 - Settings that change Azure resource shape still require intentional Bicep code changes; `caes-app` must not infer or generate new resource topology from a runtime setting request.
-- Reusable GitHub workflows must keep individual named secrets instead of `secrets: inherit` so secret exposure remains auditable.
+- Configure Azure reads individual named environment secrets directly. Do not add runtime secret forwarding or `secrets: inherit` to the reusable package deployment workflow.
 
 ## Doctor Checks
 
@@ -309,17 +349,20 @@ Deployment settings automation is post-MVP. The trusted template now provides th
 - Template expectations: required files and folders from `ucdavis/web-app-template`, including Azure Bicep files and expected config files.
 - Deployment settings contract readiness: schema version support, generated-region marker presence, package script availability, and `deployment-settings:check` success.
 - Manifest validity: schema version, required fields, supported managed-project shape, and unknown-field preservation compatibility.
-- Environment readiness: required env vars/secrets by environment, derived from the deployment settings contract, with remediation hints for missing values.
-- Azure readiness: selected subscription/tenant matches the manifest, resource groups exist or are expected to be created, OIDC bootstrap deployments can be found by recorded name, and Bicep files build.
-- Runtime configuration readiness: auth, notification, SMTP, and OTLP settings are present enough for the selected scenario without exposing values.
+- Environment readiness: required env vars/secrets by environment and configuration/local-deployment context, including resolved contract settings and hand-authored infrastructure inputs, with remediation hints for missing values. Report the required Configure Azure follow-up after changes.
+- Azure readiness: selected subscription/tenant matches the manifest, application resource groups and selected shared plans exist, managed identity/federation/RBAC match current bootstrap inputs at both scopes, deployments can be found by recorded name, and Bicep files build. Check consistent shared-plan selection and distinguish the web app's plan-derived region from other resource locations.
+- Runtime configuration readiness: auth, notification, SMTP, and OTLP settings are present enough for the selected scenario without exposing values. Check effective auth independently of catalog validation: `AUTH_CLIENT_ID` is optional in the reviewed catalog, but the server rejects a missing or placeholder `Auth:ClientId`.
+- Distinguish local configuration readiness, including `.env` precedence, from cloud configuration applied to App Service. A valid local client ID or configured GitHub variable does not by itself establish cloud runtime readiness. Never automatically upload local overrides.
 - Output format: concise human output by default and redacted structured results with `--json`.
 
 ## Testing
 
+The following describes future implementation/release coverage. This documentation-only roadmap refresh adds no tests and runs no test suites.
+
 ### MVP Tests
 
 - Unit-test package config, command-wide MVP flags, manifest validation, unknown-field preservation, future schema rejection, local-only manifest shape, and JSON file patching.
-- Unit-test wizard-to-config mapping, input validation, generated-value previewing, default-branch-only template source recording, and redaction behavior.
+- Unit-test wizard-to-config mapping, optional auth input/omission and validation, targeted `.env` preservation/idempotency/conflicts, configured-port callback instructions, generated-value previewing, default-branch-only template source recording, and redaction of unrelated local values.
 - Unit-test preview plan states and confirmation scopes for file edits, local git, GitHub repo creation, target directory conflicts/resume, `--dry-run`, `--json`, `--json --yes`, `--local-only`, and `--no-git`.
 - Integration-test `init` against a temp directory using mocked `gh` and `git` executables.
 - Integration-test GitHub repo preview/create/clone flow and clone destination behavior with mocked `gh`.
@@ -331,10 +374,10 @@ Deployment settings automation is post-MVP. The trusted template now provides th
 ### Post-MVP Tests
 
 - Unit-test GitHub variable classification and unreadable GitHub secret behavior.
-- Unit-test Azure OIDC output parsing, deterministic Azure OIDC deployment naming, Entra app matching/conflicts, additive redirect URI behavior, and Azure/Entra permission preflight handling.
-- Unit-test deployment settings contract parsing, generated deploy surface validation, `app-setting add` name normalization, duplicate detection, variable/secret classification, type validation, runtime-only settings, Bicep-participating settings, redaction, preview generation, and missing-marker conflicts.
+- Unit-test managed-identity OIDC output parsing, deterministic deployment naming, paired shared-plan overrides and consistent selection, Entra app matching/conflicts, additive redirect URI behavior, and permission preflight at both Azure RBAC scopes separately from Graph permissions.
+- Unit-test deployment settings contract parsing in Phase 4, Configure Azure/local-script generated surface validation, context-specific `requiredWhen` semantics, independent effective-auth readiness checks, `app-setting add` name normalization, duplicate detection, variable/secret classification, type validation, runtime-only settings, Bicep-participating settings, redaction, preview generation, and missing-marker conflicts.
 - Integration-test `app-setting add` against a temp generated app by updating `deployment-settings.json`, invoking the trusted template sync tool, and previewing generated file plus GitHub environment variable/secret changes.
-- Integration-test retry/resume paths with mocked existing repo, existing environments, existing variables, present secrets, Azure deployment outputs, and Entra app matches/conflicts.
+- Integration-test retry/resume paths with mocked existing repo, existing environments, existing variables, present secrets, managed-identity deployment outputs, changed bootstrap/shared-plan inputs, and Entra app matches/conflicts.
 - Snapshot-test preview plans for `present-unknown`, secret replacement, Azure deployment, Entra updates, deployment settings changes, and additive redirect URI scenarios.
 - For `web-app-template`, add checks that existing settings round-trip through `deployment-settings:sync`, `deployment-settings:check` catches stale generated regions, and Bicep builds still pass for `main.bicep` and `github-oidc.bicep`.
 - Add explicit tests that secret values never appear in spawned command display strings, logs, JSON output, errors, or snapshots.
@@ -343,6 +386,7 @@ Deployment settings automation is post-MVP. The trusted template now provides th
 ## Assumptions
 
 - V1 MVP boundary is init plus optional GitHub repo creation/cloning.
+- MVP init may write an explicitly supplied existing sign-in client ID to git-ignored `server/.env`; omission preserves local configuration and provides manual setup instructions. Scaffolding success does not imply runtime readiness.
 - GitHub environments, GitHub secrets, Azure, Entra, deployment settings automation, `app-setting add`, and full `doctor` are post-MVP.
 - Default template source is the trusted default branch of GitHub repo `ucdavis/web-app-template`.
 - V1 does not support choosing a template branch, tag, or commit.
@@ -351,7 +395,9 @@ Deployment settings automation is post-MVP. The trusted template now provides th
 - The GitHub template creation path creates the remote with `gh repo create --template`, then clones explicitly so `target-dir` is honored exactly.
 - Pre-`caes-app` generated apps are not automation-compatible in this plan.
 - The trusted-template model is acceptable for this team-specific tool; no sandboxed execution architecture is needed for template sync scripts.
+- Phase 4 provides deployment settings reading/validation; Phase 6 adds setting edits and sync. Configure Azure applies cloud settings separately from routine package deployment, and CLI commands do not automatically dispatch workflows.
+- Azure deployments use existing shared plans, and managed-identity bootstrap and configuration must agree on the environment's plan selection. User sign-in registration management is separate from GitHub OIDC bootstrap.
 - GitHub/Azure changes use "confirm then apply" behavior by default, with `--dry-run` available.
 - `init` performs foundation customization only; sample route/controller cleanup becomes a later command.
 - `init` must not stage, commit, push, or otherwise alter the git index of the generated app; generated customization files may remain uncommitted for developer review.
-- No migrations are created or modified by this planning update.
+- This refresh changes only `plan.md`; no CLI/template code, tests, migrations, cloud resources, or git index changes are part of the update, and no test suites are run.
