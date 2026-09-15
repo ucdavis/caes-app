@@ -1,0 +1,44 @@
+{
+  "name": "caes-app",
+  "version": "0.1.0",
+  "description": "CLI utility for managing CAES apps",
+  "type": "module",
+  "bin": {
+    "caes-app": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsup && node scripts/make-bin-executable.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "pack:check": "npm run build && node scripts/check-package.mjs",
+    "smoke:npx": "npm run build && bash scripts/smoke-npx.sh"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "keywords": [
+    "caes",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@inquirer/prompts": "^8.7.1",
+    "commander": "^15.0.0",
+    "execa": "^10.0.1",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.3",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.2",
+    "vitest": "^5.0.0"
+  }
+}

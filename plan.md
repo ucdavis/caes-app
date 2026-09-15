@@ -14,16 +14,18 @@ Track progress at the phase and major-deliverable level. Keep the detailed secti
 
 ### Phase 1: V1 Init MVP - CLI Foundation
 
-- [ ] Scaffold the Node 22+ / TypeScript package, ESM build, `caes-app` binary, and test tooling.
-- [ ] Add command-wide option parsing and the MVP command shell for `init`.
-- [ ] Implement manifest schema reading/writing with unknown-field preservation and future-schema rejection.
-- [ ] Implement typed preview plan steps, confirmation scopes, idempotency states, JSON output, and redaction.
-- [ ] Add structured JSON editing utilities for project config files.
-- [ ] Add release checks for package contents, executable shebang, `bin` entry, and packed `npx` smoke execution.
+- [x] Scaffold the Node 22+ / TypeScript package, ESM build, `caes-app` binary, and test tooling.
+- [x] Add command-wide option parsing and the MVP command shell for `init`.
+- [x] Implement manifest schema reading/writing with unknown-field preservation and future-schema rejection.
+- [x] Implement typed preview plan steps, confirmation scopes, idempotency states, JSON output, and redaction.
+- [x] Add structured JSON editing utilities for project config files.
+- [x] Add release checks for package contents, executable shebang, `bin` entry, and packed `npx` smoke execution.
 
 Implementation notes:
 
-- _Record brief implementation-only decisions, discoveries, or follow-up context here as this phase is completed._
+- Implemented with npm, ESM TypeScript, Node `>=22.13.0`, `commander`, `@inquirer/prompts`, `zod`, `execa`, `tsx`, `tsup`, and `vitest`.
+- `init` intentionally stops after parsing and validation with a Phase 2 not-implemented preview/result.
+- Packed smoke tests that install the tarball from a fresh npm cache require running outside the Codex sandbox because sandbox DNS blocks registry fetches and can make nested npm flows appear hung.
 
 ### Phase 2: V1 Init MVP - Local Template Initialization
 
