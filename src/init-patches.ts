@@ -72,8 +72,9 @@ export function customizeFile(file: string, source: Buffer, current: Buffer, con
     edit('SpaProxyServerUrl', /<SpaProxyServerUrl>[^<]+<\/SpaProxyServerUrl>/g,
       () => `<SpaProxyServerUrl>http://localhost:${config.ports.client}</SpaProxyServerUrl>`);
   } else if (file === '.devcontainer/docker-compose.yml') {
-    edit('SQL host port', /^([\t ]*-\s*")\d+:1433("[\t ]*\r?$)/gm,
-      (m) => `${m[1]}${config.ports.database}:1433${m[2]}`);
+    // Match only the managed value so local indentation and CRLF survive resume.
+    edit('SQL host port', /(?<=^[\t ]*-[\t ]*")\d+(?=:1433"[\t ]*\r?$)/gm,
+      () => String(config.ports.database));
   } else return { content: current, changes };
   return { content: Object.keys(changes).length ? Buffer.from(text) : current, changes };
 }

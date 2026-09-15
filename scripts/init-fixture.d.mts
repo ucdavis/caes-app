@@ -1,1 +1,1 @@
-export function createTemplateFixture(directory: string): Promise<{ repo: string; shimDir: string; sha: string }>;
+export function createTemplateFixture(directory: string): Promise<{ repo: string; sha: string; gitEnv: Record<string, string> }>;

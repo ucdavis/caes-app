@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, writeFile, rm, mkdir, stat, symlink, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir, stat, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTemplateFixture } from '../scripts/init-fixture.mjs';
 import { runCli, type InitOptions } from '../src/cli.js';
@@ -8,6 +8,7 @@ import { collectInputs, manifestDestination, validateInputs } from '../src/init.
 import { createLocalEnv, customizeFile, patchAuth } from '../src/init-patches.js';
 import { fetchTemplate, runGit, TEMPLATE_URL } from '../src/template.js';
 import type { GitRunner, InitDependencies, ResolvedInitInputs } from '../src/init-types.js';
+import { createTestSymlink } from './symlink-support.js';
 
 const config: ResolvedInitInputs = { appId: 'demo-app', displayName: 'Demo App', ports: { server: 6165, client: 6173, database: 15333 } };
 const clientId = '12345678-1234-1234-1234-123456789abc';
@@ -35,8 +36,27 @@ describe('input and auth editing', () => {
   });
 
   it('resolves manifest paths inside the target', () => {
-    expect(manifestDestination('/apps/demo', 'config/manifest.json')).toBe('/apps/demo/config/manifest.json');
-    for (const path of ['../outside', '.', '.git/config']) expect(() => manifestDestination('/apps/demo', path)).toThrow();
+    const target = resolve('apps/demo');
+    expect(manifestDestination(target, 'config/manifest.json')).toBe(join(target, 'config/manifest.json'));
+    for (const path of ['../outside', '.', '.git/config']) expect(() => manifestDestination(target, path)).toThrow();
+  });
+
+  it.each([
+    { eol: '\n', port: 14333 }, { eol: '\r\n', port: 14333 },
+    { eol: '\n', port: 15333 }, { eol: '\r\n', port: 15333 },
+  ])('patches only the Compose port and preserves formatting ($port, $eol)', ({ eol, port }) => {
+    const name = '.devcontainer/docker-compose.yml';
+    const source = Buffer.from(fixtureFiles[name]!);
+    const current = fixtureFiles[name]!.replace(/\r?\n/g, eol)
+      .replace(/^[\t ]*- "14333:1433"/m, '\t  -  "14333:1433"\t ');
+    const inputs = { ...config, ports: { ...config.ports, database: port } };
+    const patched = customizeFile(name, source, Buffer.from(current), inputs);
+    expect(patched.content.toString()).toBe(current.replace('14333:1433', `${port}:1433`));
+    const resumed = customizeFile(name, source, patched.content, inputs);
+    expect(resumed.content).toEqual(patched.content);
+    expect(resumed.changes).toEqual({});
+    const conflicting = Buffer.from(current.replace('14333:1433', '19999:1433'));
+    expect(() => customizeFile(name, source, conflicting, inputs)).toThrow(/managed configuration/);
   });
 
   it('preserves dotenv comments, secrets and CRLF, and skips identical IDs', () => {
@@ -154,6 +174,50 @@ describe('local init integration', () => {
     await expect(stat(result.target)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it.each([true, false])('resumes CRLF with spaces, alternate metadata and portable step IDs (noGit=%s)', async (noGit) => {
+    const target = join(directory, `demo with spaces ${++sequence}`);
+    const args = ['--manifest', 'metadata/app.json', '--database-port', '15333', ...(noGit ? ['--no-git'] : [])];
+    const preview = await invoke(args, {}, target);
+    expect(preview.code, preview.stdout).toBe(0);
+    expect(preview.payload.steps.find((item: any) => item.id === 'server/.env')).toMatchObject({
+      state: 'created', target: join(target, 'server/.env'),
+    });
+    const first = await invoke([...args, '--yes'], {}, target);
+    expect(first.code, first.stdout).toBe(0);
+    const composePath = join(target, '.devcontainer/docker-compose.yml');
+    const crlf = (await readFile(composePath, 'utf8')).replace(/\r?\n/g, '\r\n');
+    await writeFile(composePath, crlf);
+    const resumed = await invoke([...args, '--yes'], {}, target);
+    expect(resumed.code, resumed.stdout).toBe(0);
+    expect(resumed.payload.steps.every((item: any) => item.state === 'skipped')).toBe(true);
+    expect(await readFile(composePath, 'utf8')).toBe(crlf);
+    const conflictText = crlf.replace('15333:1433', '19999:1433');
+    await writeFile(composePath, conflictText);
+    const conflict = await invoke([...args, '--yes'], {}, target);
+    expect(conflict.code).toBe(2);
+    expect(conflict.payload.preview.steps.find((item: any) => item.id === '.devcontainer/docker-compose.yml')).toMatchObject({
+      state: 'conflict', target: composePath,
+    });
+    expect(await readFile(composePath, 'utf8')).toBe(conflictText);
+    for (const steps of [preview.payload.steps, first.payload.steps, resumed.payload.steps, conflict.payload.preview.steps]) {
+      expect(steps.every((item: any) => !item.id.includes('\\'))).toBe(true);
+    }
+  });
+
+  it.each(['Package.json', 'server/.ENV', 'SERVER', '.DevContainer', 'PACKAGE.JSON/metadata.json', 'SERVER/.ENV/metadata.json', 'metadata/../Package.json'])(
+    'rejects portable manifest collision %s before creating any files', async (manifest) => {
+      for (const applyArgs of [[], ['--yes']]) {
+        const target = join(directory, `collision-${++sequence}`);
+        await mkdir(target);
+        const result = await invoke(['--manifest', manifest, ...applyArgs], {}, target);
+        expect(result.code, result.stdout).toBe(2);
+        expect(result.payload.error.code).toBe('conflict');
+        expect(result.payload.preview.hasConflicts).toBe(true);
+        expect(await readdir(target)).toEqual([]);
+      }
+    },
+  );
+
   it('applies foundation edits and optional auth without Git, preserving binaries and mode', async () => {
     const result = await invoke(['--yes', '--no-git', '--app-id', 'demo-app', '--display-name', 'Demo App', '--server-port', '6165', '--client-port', '6173', '--database-port', '15333', '--auth-client-id', clientId]);
     expect(result.code, result.stdout).toBe(0);
@@ -187,9 +251,9 @@ describe('local init integration', () => {
     expect(env).toContain('Notification__DefaultAppName="Demo App"');
     expect(env).toContain('Smtp__FromName="Demo App"');
     expect(env).toContain('Smtp__Password="<smtp_password>"');
-    expect((await stat(join(result.target, 'server/.env'))).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect((await stat(join(result.target, 'server/.env'))).mode & 0o777).toBe(0o600);
     expect(await readFile(join(result.target, 'asset.bin'))).toEqual(Buffer.from([0, 1, 255, 13, 10, 128]));
-    expect((await stat(join(result.target, 'scripts/example.sh'))).mode & 0o111).not.toBe(0);
+    if (process.platform !== 'win32') expect((await stat(join(result.target, 'scripts/example.sh'))).mode & 0o111).not.toBe(0);
     for (const path of ['.git', 'node_modules', 'publish', 'server/bin']) await expect(stat(join(result.target, path))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(JSON.stringify(await json('.caes-app.json'))).not.toContain(clientId);
     for (const url of [':6173/signin-oidc', ':6165/signin-oidc', ':44322/signin-oidc']) expect(result.stdout).toContain(url);
@@ -288,11 +352,13 @@ describe('local init integration', () => {
     expect(await readFile(path, 'utf8')).toBe('PASSWORD=sentinel-secret\n');
   });
 
-  it.each([{ authArgs: [] }, { authArgs: ['--auth-client-id', clientId] }])('rejects symlink destinations without touching the referent ($authArgs)', async ({ authArgs }) => {
+  it.for([{ authArgs: [] }, { authArgs: ['--auth-client-id', clientId] }])('rejects symlink destinations without touching the referent ($authArgs)', async ({ authArgs }, context) => {
     const first = await invoke(['--yes', '--no-git']);
     const external = join(directory, 'outside.env'); await writeFile(external, 'outside');
     await rm(join(first.target, 'server/.env'));
-    await symlink(external, join(first.target, 'server/.env'));
+    if (!await createTestSymlink(external, join(first.target, 'server/.env'))) {
+      context.skip('Windows file symlinks require Developer Mode or symbolic-link privileges.');
+    }
     const result = await invoke(['--yes', ...authArgs], {}, first.target);
     expect(result.code).toBe(2);
     expect(await readFile(external, 'utf8')).toBe('outside');
@@ -439,7 +505,7 @@ describe('local init integration', () => {
     const code = await runCli(['node', 'caes-app', '--json', '--yes', '--local-only', '--no-git', '--manifest', 'state/project.json', 'init', target],
       { stdout: (text) => { output += text; }, stderr: () => {} }, { git, interactive: false });
     expect(code, output).toBe(0);
-    expect(JSON.parse(await readFile(join(target, 'state/project.json'), 'utf8')).appId).toBe(target.split('/').at(-1));
+    expect(JSON.parse(await readFile(join(target, 'state/project.json'), 'utf8')).appId).toBe(basename(target));
     await expect(stat(join(target, '.git'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 

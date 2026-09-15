@@ -19,7 +19,7 @@ try {
   }
 
   const binStat = await stat(binPath);
-  if ((binStat.mode & 0o111) === 0) {
+  if (process.platform !== 'win32' && (binStat.mode & 0o111) === 0) {
     throw new Error('dist/cli.js must be executable.');
   }
 

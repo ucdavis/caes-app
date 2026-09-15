@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { CLI_VERSION } from '../src/constants.js';
 import { runCli } from '../src/cli.js';
+import { createTestSymlink } from './symlink-support.js';
 
 async function invoke(args: string[]) {
   let stdout = '';
@@ -72,31 +73,39 @@ describe('CLI entry point', () => {
   const tsxLoader = import.meta.resolve('tsx');
   let directory: string;
   let linkPath: string;
+  let symlinksAvailable: boolean;
 
   beforeAll(async () => {
     directory = await mkdtemp(join(tmpdir(), 'caes-app-entry-'));
     linkPath = join(directory, 'caes-app.ts');
-    await symlink(cliPath, linkPath);
+    symlinksAvailable = await createTestSymlink(cliPath, linkPath);
   });
 
   afterAll(async () => {
     if (directory) await rm(directory, { recursive: true, force: true });
   });
 
-  it.each([
+  const entryCases = [
     { args: ['--version'], status: 0, stdout: `${CLI_VERSION}\n`, stderr: '' },
     { args: ['--help'], status: 0, stdout: 'Usage: caes-app', stderr: '' },
     { args: ['init', '--no-git'], status: 2, stdout: '', stderr: '--no-git is only valid with --local-only.' },
     { args: ['init', '--json'], status: 1, stdout: '"not-implemented"', stderr: '' },
-  ])('runs direct and symlink entry points for $args', ({ args, status, stdout, stderr }) => {
-    const direct = spawnSync(process.execPath, ['--import', tsxLoader, cliPath, ...args], { encoding: 'utf8' });
-    const linked = spawnSync(process.execPath, ['--import', tsxLoader, linkPath, ...args], { encoding: 'utf8' });
+  ];
 
+  it.each(entryCases)('runs the direct entry point for $args', ({ args, status, stdout, stderr }) => {
+    const direct = spawnSync(process.execPath, ['--import', tsxLoader, cliPath, ...args], { encoding: 'utf8' });
     expect(direct.error).toBeUndefined();
-    expect(linked.error).toBeUndefined();
     expect(direct.status).toBe(status);
     expect(direct.stdout).toContain(stdout);
     expect(direct.stderr).toContain(stderr);
+  });
+
+  it.for(entryCases)('runs the symlink entry point for $args', ({ args }, context) => {
+    if (!symlinksAvailable) context.skip('Windows file symlinks require Developer Mode or symbolic-link privileges.');
+    const direct = spawnSync(process.execPath, ['--import', tsxLoader, cliPath, ...args], { encoding: 'utf8' });
+    const linked = spawnSync(process.execPath, ['--import', tsxLoader, linkPath, ...args], { encoding: 'utf8' });
+    expect(direct.error).toBeUndefined();
+    expect(linked.error).toBeUndefined();
     expect({ status: linked.status, stdout: linked.stdout, stderr: linked.stderr }).toEqual({
       status: direct.status, stdout: direct.stdout, stderr: direct.stderr,
     });

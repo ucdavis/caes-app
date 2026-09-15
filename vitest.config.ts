@@ -4,5 +4,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    // Git/process integration tests need headroom on native Windows runners.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 });

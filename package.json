@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "pack:check": "npm run build && node scripts/check-package.mjs",
-    "smoke:npx": "npm run build && bash scripts/smoke-npx.sh"
+    "smoke:npx": "npm run build && node scripts/smoke-npx.mjs"
   },
   "engines": {
     "node": ">=22.13.0"

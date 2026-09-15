@@ -3,6 +3,9 @@
 Create a local CAES app from the current default branch of
 [`ucdavis/web-app-template`](https://github.com/ucdavis/web-app-template).
 Requires Node **22.13+**, Git, and access to the template repository.
+On Windows, use native Windows Node/npm and Git for Windows, with `git` on
+`PATH`. Git Bash is supported; the multiline examples below use Bash syntax.
+The npm verification scripts also run from PowerShell or Command Prompt.
 
 ## Initialize an app
 
@@ -52,6 +55,10 @@ Local files and Git initialization share one confirmation. New repositories use
 `main`, with no remote, staged files, or commits. An existing repository rooted at
 the target is preserved. Init does not install dependencies or start the app.
 
+Manifest paths must not collide with template files or `server/.env`, including
+containing or being nested beneath those files. These checks ignore letter case
+on every platform so that metadata paths remain portable.
+
 ## Resume and results
 
 Rerun the same command to complete an interrupted initialization. The CLI uses the
@@ -59,6 +66,8 @@ manifest's original commit and settings, restores missing files, completes safe
 managed edits, and skips matching files. Unrelated developer edits and unknown
 manifest fields are preserved. Conflicting managed values stop application; changing
 identity or ports and upgrading the template are outside this phase.
+LF and CRLF line endings are accepted in managed configuration; existing line
+endings and formatting are preserved when updating the Docker Compose port.
 
 All destination checks complete before application. Files changed after preview
 cause a conflict. File replacements are atomic individually; the whole operation
@@ -69,13 +78,19 @@ JSON previews use `kind: "preview"` with steps and `hasConflicts`. Preflight err
 use a structured error, including a preview when available. Apply results use
 `kind: "result"`, `status: "success" | "cancelled" | "failure"`, per-step outcomes,
 `scaffoldingCompleted`, `runtimeReadiness: "unverified"`, and `nextSteps`.
+File step IDs always use `/` separators; their `target` paths use the host's
+native filesystem format.
 Exit codes are **0** for success/preview/declined confirmation, **2** for invalid
 inputs or conflicts, and **1** for execution failures or unavailable Phase 3 mode.
 
 ## Local sign-in setup
 
 Initialization always creates a missing `server/.env` from the resolved template's
-`server/.env.example`, with private file permissions. It fills in the app's telemetry
+`server/.env.example`, with owner-only permissions (`0600`) on POSIX systems.
+On Windows, files inherit directory access-control permissions (ACLs); the CLI
+does not change those ACLs or guarantee owner-only access. Use a directory with
+appropriate access restrictions for local configuration.
+It fills in the app's telemetry
 identity, display name, development database connection, notification URL, and any
 supplied auth client ID. Other example defaults, comments, and placeholders remain
 in place; configure the remaining auth, telemetry, and SMTP values before using
@@ -103,7 +118,7 @@ environment variables; later sources win and can change the effective callback U
 ## Development and verification
 
 ```bash
-npm install
+npm ci
 npm test
 npm run typecheck
 npm run build
@@ -115,3 +130,19 @@ Integration and packed-binary smoke tests use an offline local Git fixture, with
 no GitHub or Azure mutations. Packed smoke tests install into a temporary npm
 project; run them outside the Codex sandbox because nested npm installation can
 hang there. No .NET execution or migration changes are needed for CLI verification.
+
+The smoke test uses Node and exercises the installed package launcher (`.cmd` on
+Windows) and `npm exec --offline`, including paths with spaces, alternate manifests,
+Git initialization, and resumable runs. Template requests are redirected to a local
+fixture using child-process Git configuration; user Git settings are unchanged.
+Dependency installation still requires npm registry access.
+
+Windows file-symlink tests require Developer Mode or symbolic-link privileges.
+When those privileges are unavailable locally, only the affected tests are skipped
+with an explanation. Direct-entry tests still run. In CI, missing symlink privileges
+fail the checks instead of skipping coverage.
+
+GitHub Actions runs typechecking, tests, package verification, and packed smoke tests
+on Windows, macOS, and Linux with Node 22.13.0 and 24.x, for pull requests and pushes
+to `main`. Passing macOS checks alone does not establish Windows compatibility;
+the Windows jobs must pass as well.

@@ -179,8 +179,12 @@ export async function initialize(invocation: InitInvocation, io: CliIo, injected
     const defaults = templateDefaults(template.files);
     const config = await collectInputs(options, target, defaults, recorded, deps);
     const manifest: CaesAppManifest = recorded ?? { schemaVersion: 1, appId: config.appId, displayName: config.displayName, ports: config.ports, templateSource: template.source };
-    const manifestRelative = relative(target, manifestPath).split(sep).join('/');
-    if ([...template.files.keys(), 'server/.env'].some((name) => name === manifestRelative || name.startsWith(`${manifestRelative}/`) || manifestRelative.startsWith(`${name}/`))) {
+    // Reserve case-insensitive names on every host so manifests remain portable.
+    const manifestRelative = relative(target, manifestPath).split(sep).join('/').toLowerCase();
+    if ([...template.files.keys(), 'server/.env'].some((file) => {
+      const name = file.toLowerCase();
+      return name === manifestRelative || name.startsWith(`${manifestRelative}/`) || manifestRelative.startsWith(`${name}/`);
+    })) {
       throw conflict('Manifest path collides with template content or the local auth file. Choose a separate metadata file.');
     }
     plan.summary = `Initialize ${config.displayName} (${config.appId}) from ${template.source.defaultBranch}@${template.source.resolvedCommitSha}`;
@@ -188,7 +192,7 @@ export async function initialize(invocation: InitInvocation, io: CliIo, injected
     const inspected = new Map<string, FileState | undefined>();
     const addWrite = (path: string, before: FileState | undefined, after: Buffer, mode: number, type: PreviewStep['type'], preview: Record<string, unknown>) => {
       const state = before?.content.equals(after) ? 'skipped' : before ? 'updated' : 'created';
-      const item = step(relative(target, path), type, path, state, preview);
+      const item = step(relative(target, path).split(sep).join('/'), type, path, state, preview);
       plan.steps.push(item);
       inspected.set(path, before);
       if (state !== 'skipped') operations.push({ path, before, after, mode: before?.mode ?? mode, step: item });
