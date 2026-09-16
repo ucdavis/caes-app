@@ -2,7 +2,7 @@
 
 ## Summary
 
-Build `caes-app` as a Node 22+ / TypeScript CLI published with a `caes-app` binary, usable through `npx caes-app init`.
+Build `caes-app` as a Node 24+ / TypeScript CLI published with a `caes-app` binary, usable through `npx caes-app init`.
 
 The V1 Init MVP is intentionally narrow: create/customize a new app from the default branch of `ucdavis/web-app-template`, optionally create and clone the GitHub repo from that template, write a non-secret manifest, preview all mutations before applying them, and record the template source default branch and resolved commit SHA. GitHub environments/secrets, Azure OIDC, Entra auth app management, deployment settings automation, `app-setting add`, and full `doctor` behavior are post-MVP roadmap features.
 
@@ -16,7 +16,7 @@ Track progress at the phase and major-deliverable level. Keep the detailed secti
 
 ### Phase 1: V1 Init MVP - CLI Foundation
 
-- [x] Scaffold the Node 22+ / TypeScript package, ESM build, `caes-app` binary, and test tooling.
+- [x] Scaffold the Node 24+ / TypeScript package, ESM build, `caes-app` binary, and test tooling.
 - [x] Add command-wide option parsing and the MVP command shell for `init`.
 - [x] Implement manifest schema reading/writing with unknown-field preservation and future-schema rejection.
 - [x] Implement typed preview plan steps, confirmation scopes, idempotency states, JSON output, and redaction.
@@ -25,7 +25,7 @@ Track progress at the phase and major-deliverable level. Keep the detailed secti
 
 Implementation notes:
 
-- Implemented with npm, ESM TypeScript, Node `>=22.13.0`, `commander`, `@inquirer/prompts`, `zod`, `execa`, `tsx`, `tsup`, and `vitest`.
+- Implemented with npm, ESM TypeScript, Node `>=24.0.0`, `commander`, `@inquirer/prompts`, `zod`, `execa`, `tsx`, `tsup`, and `vitest`.
 - At completion of Phase 1, `init` stopped after parsing and validation; Phase 2 now implements the local-only path.
 - Packed smoke tests that install the tarball from a fresh npm cache require running outside the Codex sandbox because sandbox DNS blocks registry fetches and can make nested npm flows appear hung.
 
@@ -176,7 +176,7 @@ Implementation notes:
 
 ## CLI Technical Stack
 
-- Use TypeScript with ESM on Node 22+.
+- Use TypeScript with ESM on Node 24+.
 - Use `commander` for command routing and option parsing.
 - Use `@inquirer/prompts` for interactive wizard prompts.
 - Use `zod` for manifest, config, and user input validation.

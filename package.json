@@ -20,7 +20,7 @@
     "smoke:npx": "npm run build && node scripts/smoke-npx.mjs"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=24.0.0"
   },
   "keywords": [
     "caes",

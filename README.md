@@ -2,7 +2,7 @@
 
 Create a local CAES app from the current default branch of
 [`ucdavis/web-app-template`](https://github.com/ucdavis/web-app-template).
-Requires Node **22.13+**, Git, and access to the template repository.
+Requires Node **24.0+**, Git, and access to the template repository.
 On Windows, use native Windows Node/npm and Git for Windows, with `git` on
 `PATH`. Git Bash is supported; the multiline examples below use Bash syntax.
 The npm verification scripts also run from PowerShell or Command Prompt.
@@ -143,6 +143,6 @@ with an explanation. Direct-entry tests still run. In CI, missing symlink privil
 fail the checks instead of skipping coverage.
 
 GitHub Actions runs typechecking, tests, package verification, and packed smoke tests
-on Windows, macOS, and Linux with Node 22.13.0 and 24.x, for pull requests and pushes
+on Windows, macOS, and Linux with Node 24.x, for pull requests and pushes
 to `main`. Passing macOS checks alone does not establish Windows compatibility;
 the Windows jobs must pass as well.

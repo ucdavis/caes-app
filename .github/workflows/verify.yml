@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
-        node: ['22.13.0', '24.x']
+        node: ['24.x']
     env:
       # Missing symlink privileges must fail CI, never silently skip coverage.
       CI: 'true'
