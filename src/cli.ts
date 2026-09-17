@@ -207,7 +207,7 @@ function emitCommandError(error: CommandError, io: CliIo, options: InitOptions):
             code: error.code,
             message: error.message,
           },
-          preview: renderJsonPreview(maybePreview),
+          preview: { ...renderJsonPreview(maybePreview), exitCode: error.exitCode },
         }
       : {
           kind: 'error',

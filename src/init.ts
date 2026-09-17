@@ -10,7 +10,7 @@ import { CommandError } from './errors.js';
 import { parseManifest, serializeManifest, type CaesAppManifest } from './manifest.js';
 import { hasConflicts, renderHumanPreview, renderJsonPreview, sanitizePreviewStep, type PreviewPlan, type PreviewStep } from './preview.js';
 import { redactValue } from './redaction.js';
-import { authInstructions, createLocalEnv, customizeFile, patchAuth, templateDefaults } from './init-patches.js';
+import { authInstructions, createLocalEnv, customizeFile, patchAuth, templateDefaults, TemplateConfigurationError } from './init-patches.js';
 import { fetchTemplate, requireGit, runGit, validateSource } from './template.js';
 import type { InitDependencies, InitResult, ResolvedInitInputs, TemplateFile } from './init-types.js';
 
@@ -99,7 +99,7 @@ async function rootListing(target: string): Promise<string[]> {
 }
 
 function step(id: string, type: PreviewStep['type'], target: string, state: PreviewStep['state'], preview: Record<string, unknown>): PreviewStep {
-  return { id, type, target, state, action: state === 'conflict' ? 'resolve conflict' : state === 'skipped' ? 'preserve' : 'write',
+  return { id, type, target, state, action: state === 'failed' ? 'resolve failure' : state === 'conflict' ? 'resolve conflict' : state === 'skipped' ? 'preserve' : 'write',
     source: 'trusted template / resolved init inputs', confirmationScope: { kind: 'mvp-file-edits' }, preview };
 }
 
@@ -206,13 +206,14 @@ export async function initialize(invocation: InitInvocation, io: CliIo, injected
       const destination = join(target, name);
       try {
         const before = await inspect(target, destination);
-        const patch = customizeFile(name, file.content, before?.content ?? file.content, config);
+        const patch = customizeFile(name, file.content, before?.content ?? file.content, config, defaults);
         finalFiles.set(name, { ...file, content: patch.content });
         addWrite(destination, before, patch.content, file.mode, name.endsWith('.json') ? 'json-patch' : 'file-write',
           Object.keys(patch.changes).length ? { changes: patch.changes } : { bytes: patch.content.length });
       } catch (error) {
         if (!(error instanceof CommandError)) throw error;
-        plan.steps.push(step(name, 'file-write', destination, 'conflict', { message: error.message }));
+        plan.steps.push(step(name, 'file-write', destination, error.code === 'template-error' ? 'failed' : 'conflict', { message: error.message }));
+        if (error.code === 'template-error') throw error;
       }
     }
     if (!hasConflicts(plan)) nextSteps = authInstructions(config, finalFiles);
@@ -293,7 +294,13 @@ export async function initialize(invocation: InitInvocation, io: CliIo, injected
       emitResult('failure', failure);
       Object.assign(failure, { emitted: true });
     } else {
-      if (!hasConflicts(plan)) plan.steps.push(step('init.validation', 'manual-prompt', target, failure.exitCode === 2 ? 'conflict' : 'failed', { message: failure.message }));
+      if (!plan.steps.some((item) => item.state === 'failed')) {
+        if (failure instanceof TemplateConfigurationError) {
+          plan.steps.push(step(failure.file, 'file-write', join(target, failure.file), 'failed', { message: failure.message }));
+        } else if (!hasConflicts(plan)) {
+          plan.steps.push(step('init.validation', 'manual-prompt', target, failure.code !== 'template-error' && failure.exitCode === 2 ? 'conflict' : 'failed', { message: failure.message }));
+        }
+      }
       Object.assign(failure, { preview: plan, previewOptions });
     }
     throw failure;

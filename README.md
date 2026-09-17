@@ -84,6 +84,16 @@ manifest fields are preserved. Conflicting managed values stop application; chan
 identity or ports and upgrading the template are outside this phase.
 LF and CRLF line endings are accepted in managed configuration; existing line
 endings and formatting are preserved when updating the Docker Compose port.
+Devcontainer ports are mapped using the pinned template's launch settings, Vite
+configuration, and Docker Compose settings, independently of display labels.
+Current labels and browser-forwarding behavior are preserved; legacy Vite labels
+that embed the server port are updated when that port changes.
+
+Unsupported template port configuration is reported as `template-error` with a
+failed preflight step identifying the file and setting. Update the CLI or report
+the template incompatibility; editing the destination cannot fix the source.
+Incompatible local managed edits remain `conflict` errors. Both stop before any
+destination writes and exit with status **2**.
 
 All destination checks complete before application. Files changed after preview
 cause a conflict. File replacements are atomic individually; the whole operation
@@ -97,7 +107,8 @@ use a structured error, including a preview when available. Apply results use
 File step IDs always use `/` separators; their `target` paths use the host's
 native filesystem format.
 Exit codes are **0** for success/preview/declined confirmation, **2** for invalid
-inputs or conflicts, and **1** for execution failures or unavailable Phase 3 mode.
+inputs, configuration incompatibilities, or conflicts, and **1** for execution
+failures or unavailable Phase 3 mode.
 
 ## Local sign-in setup
 
