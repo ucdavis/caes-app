@@ -91,6 +91,26 @@ export function redactCommand(command: string, args: readonly string[] = []): st
   return [command, ...redactCommandArgs(args)].join(' ');
 }
 
+export function redactDiagnostic(message: string, args: readonly string[]): string {
+  const redacted = redactCommandArgs(args);
+  const replacements = new Map<string, string>();
+  args.forEach((arg, index) => {
+    const replacement = redacted[index]!;
+    if (arg && arg !== replacement && (!replacements.has(arg) || replacement === REDACTED)) {
+      replacements.set(arg, replacement);
+    }
+  });
+  if (!replacements.size) return message;
+
+  // Match whole argument tokens literally, longest first, without rescanning
+  // replacements (which may themselves contain sensitive token text).
+  const pattern = [...replacements.keys()]
+    .sort((left, right) => right.length - left.length)
+    .map((arg) => arg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+  return message.replace(new RegExp(pattern, 'g'), (match) => replacements.get(match)!);
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
