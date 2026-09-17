@@ -6,11 +6,36 @@ import type { ResolvedInitInputs, TemplateFile } from './init-types.js';
 export interface FilePatch { content: Buffer; changes: Record<string, unknown> }
 type ObjectValue = Record<string, any>;
 type PortMapping = ReadonlyMap<string, string>;
+type Ports = ResolvedInitInputs['ports'];
 
-function incompatible(file: string): never {
-  throw new CommandError(`Unsupported or manually changed managed configuration in ${file}. Restore the template/generated value and retry.`, {
+const vitePortTrivia = String.raw`(?:[\t ]|/\*(?:[^*\r\n]|\*(?!/))*\*/)*`;
+const vitePortPattern = new RegExp(
+  String.raw`^([\t ]*port[\t ]*:[\t ]*)(0|[1-9]\d*)${vitePortTrivia}(,?)${vitePortTrivia}(?://[^\r\n]*)?\r?$`, 'gm',
+);
+
+function incompatible(file: string, setting?: string): never {
+  throw new CommandError(`Unsupported or manually changed managed configuration in ${file}${setting ? ` (${setting})` : ''}. Restore the template/generated value and retry.`, {
     code: 'conflict', exitCode: 2,
   });
+}
+
+export class TemplateConfigurationError extends CommandError {
+  constructor(readonly file: string, setting: string) {
+    super(`Unsupported template configuration in ${file} (${setting}). Update the CLI or report this template incompatibility; no destination changes were applied.`, {
+      code: 'template-error', exitCode: 2,
+    });
+  }
+}
+
+function validPort(port: unknown): port is number {
+  return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+function httpPort(value: string): number {
+  const url = new URL(value);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error();
+  // URL normalizes explicit :80/:443 away; these are still valid template ports.
+  return Number(url.port || (url.protocol === 'http:' ? 80 : 443));
 }
 
 export function readTemplateJson(files: Map<string, TemplateFile>, file: string): ObjectValue {
@@ -20,19 +45,25 @@ export function readTemplateJson(files: Map<string, TemplateFile>, file: string)
 }
 
 export function templateDefaults(files: Map<string, TemplateFile>): ResolvedInitInputs['ports'] {
-  try {
-    const launch = readTemplateJson(files, 'server/Properties/launchSettings.json');
-    const vite = files.get('client/vite.config.ts')!.content.toString();
-    const compose = files.get('.devcontainer/docker-compose.yml')!.content.toString();
-    return {
-      server: Number(new URL(launch.profiles['http-cli'].applicationUrl).port),
-      client: Number(singleMatch(vite, /\bport:\s*(\d+)/g, 'client/vite.config.ts')[1]),
-      database: Number(singleMatch(compose, /^\s*-\s*"(\d+):1433"\s*$/gm, '.devcontainer/docker-compose.yml')[1]),
-    };
-  } catch (error) {
-    if (error instanceof CommandError) throw error;
-    return incompatible('template port settings');
-  }
+  const seen = new Set<number>();
+  const readPort = (file: string, setting: string, extract: (text: string) => number): number => {
+    try {
+      const port = extract(files.get(file)!.content.toString());
+      if (!validPort(port) || seen.has(port)) throw new Error();
+      seen.add(port);
+      return port;
+    } catch {
+      throw new TemplateConfigurationError(file, `${setting}: expected a valid, distinct port`);
+    }
+  };
+  return {
+    server: readPort('server/Properties/launchSettings.json', 'profiles.http-cli.applicationUrl',
+      (text) => httpPort(JSON.parse(text).profiles['http-cli'].applicationUrl)),
+    client: readPort('client/vite.config.ts', 'server.port',
+      (text) => matchVitePort(text).value),
+    database: readPort('.devcontainer/docker-compose.yml', 'SQL host port',
+      (text) => Number(singleMatch(text, /^[\t ]*-[\t ]*"(\d+):1433"[\t ]*\r?$/gm, '.devcontainer/docker-compose.yml')[1])),
+  };
 }
 
 function singleMatch(text: string, pattern: RegExp, file: string): RegExpMatchArray {
@@ -41,15 +72,40 @@ function singleMatch(text: string, pattern: RegExp, file: string): RegExpMatchAr
   return matches[0]!;
 }
 
-export function customizeFile(file: string, source: Buffer, current: Buffer, config: ResolvedInitInputs): FilePatch {
+function matchVitePort(text: string): { value: number; offset: number; length: number } {
+  const file = 'client/vite.config.ts';
+  // Count candidates anywhere, beyond the strict literal matcher, so inline or
+  // non-literal duplicates cannot be ignored.
+  singleMatch(text, /\bport[\t ]*:/g, file);
+  const match = singleMatch(text, vitePortPattern, file);
+  const value = Number(match[2]);
+  if (!validPort(value)) return incompatible(file, 'server.port');
+  if (!match[3]) {
+    // Without a comma, a newline/comment may continue an expression. Only an
+    // object close (or EOF for a standalone property) can terminate this value.
+    const following = text.slice(match.index! + match[0].length)
+      .replace(/^(?:\s+|\/\/[^\r\n]*(?:\r?\n|$)|\/\*[\s\S]*?\*\/)*/, '');
+    if (following && !following.startsWith('}')) return incompatible(file, 'server.port');
+  }
+  return { value, offset: match.index! + match[1]!.length, length: match[2]!.length };
+}
+
+export function customizeFile(file: string, source: Buffer, current: Buffer, config: ResolvedInitInputs, defaults: Ports): FilePatch {
   const changes: Record<string, unknown> = {};
   if (['package.json', 'package-lock.json', 'client/package.json', 'client/package-lock.json',
     'server/appsettings.json', 'server/appsettings.Development.json',
     'server/Properties/launchSettings.json', '.devcontainer/devcontainer.json'].includes(file)) {
-    const original = parseJsonObject(source.toString(), file).value as ObjectValue;
+    let original: ObjectValue;
+    try { original = parseJsonObject(source.toString(), file).value; } catch (error) {
+      if (file === '.devcontainer/devcontainer.json') throw new TemplateConfigurationError(file, 'JSON object');
+      throw error;
+    }
     const desired = structuredClone(original);
     let portMapping: PortMapping | undefined;
-    try { portMapping = configureJson(file, desired, config); } catch { return incompatible(file); }
+    try { portMapping = configureJson(file, desired, config, defaults); } catch (error) {
+      if (error instanceof CommandError) throw error;
+      return incompatible(file);
+    }
     const parsed = parseJsonObject(current.toString(), file);
     const managed = managedPaths(file, original, desired);
     const merged = mergeChanges(original, desired, parsed.value, [], changes, file, managed, portMapping);
@@ -68,7 +124,14 @@ export function customizeFile(file: string, source: Buffer, current: Buffer, con
     }
   };
   if (file === 'client/vite.config.ts') {
-    edit('server.port', /\bport:\s*\d+/g, () => `port: ${config.ports.client}`);
+    const old = matchVitePort(original);
+    const found = matchVitePort(text);
+    const next = config.ports.client;
+    if (found.value !== old.value && found.value !== next) return incompatible(file, 'server.port');
+    if (found.value !== next) {
+      text = text.slice(0, found.offset) + next + text.slice(found.offset + found.length);
+      changes['server.port'] = { before: found.value, after: next };
+    }
     edit('backend fallback', /(['"])http:\/\/localhost:\d+\1/g, (m) => `${m[1]}http://localhost:${config.ports.server}${m[1]}`);
   } else if (file === 'server/server.csproj') {
     edit('SpaProxyServerUrl', /<SpaProxyServerUrl>[^<]+<\/SpaProxyServerUrl>/g,
@@ -81,17 +144,27 @@ export function customizeFile(file: string, source: Buffer, current: Buffer, con
   return { content: Object.keys(changes).length ? Buffer.from(text) : current, changes };
 }
 
-function devcontainerPortMapping(value: ObjectValue, ports: ResolvedInitInputs['ports']): PortMapping {
-  const oldServer = String(Number(new URL(value.containerEnv.ASPNETCORE_URLS).port));
-  const sourcePorts = Object.keys(value.portsAttributes);
-  const clientKey = sourcePorts.find((key) => String(value.portsAttributes[key].label).startsWith('Vite Dev Server'));
-  const databaseKey = sourcePorts.find((key) => String(value.portsAttributes[key].label).startsWith('SQL Server'));
-  if (!clientKey || !databaseKey || !value.portsAttributes[oldServer] ||
-      new Set([oldServer, clientKey, databaseKey]).size !== 3) throw new Error();
-  return new Map([[oldServer, String(ports.server)], [clientKey, String(ports.client)], [databaseKey, String(ports.database)]]);
+function devcontainerPortMapping(value: ObjectValue, ports: Ports, defaults: Ports): PortMapping {
+  const fail = (setting: string): never => { throw new TemplateConfigurationError('.devcontainer/devcontainer.json', setting); };
+  if (!Object.values(defaults).every(validPort) || new Set(Object.values(defaults)).size !== 3) {
+    fail('template ports: expected valid, distinct ports');
+  }
+  if (typeof value.name !== 'string') fail('name');
+  const url = value.containerEnv?.ASPNETCORE_URLS;
+  try {
+    if (typeof url !== 'string' || !/:\d+$/.test(url) || httpPort(url) !== defaults.server) throw new Error();
+  } catch { fail('containerEnv.ASPNETCORE_URLS: expected the template server port'); }
+  if (!Array.isArray(value.forwardPorts) || !value.forwardPorts.every(validPort)) fail('forwardPorts');
+  if (!value.portsAttributes || typeof value.portsAttributes !== 'object' || Array.isArray(value.portsAttributes)) fail('portsAttributes');
+  for (const port of Object.values(defaults)) {
+    const entry = value.portsAttributes[port];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) fail(`portsAttributes.${port}`);
+    if (typeof entry.label !== 'string') fail(`portsAttributes.${port}.label`);
+  }
+  return new Map((['server', 'client', 'database'] as const).map((role) => [String(defaults[role]), String(ports[role])]));
 }
 
-function configureJson(file: string, value: ObjectValue, config: ResolvedInitInputs): PortMapping | undefined {
+function configureJson(file: string, value: ObjectValue, config: ResolvedInitInputs, defaults: Ports): PortMapping | undefined {
   const { appId, displayName, ports } = config;
   const requireString = (text: unknown): string => { if (typeof text !== 'string') throw new Error(); return text; };
   const replaceOnce = (text: unknown, regex: RegExp, replacement: string): string => {
@@ -134,18 +207,19 @@ function configureJson(file: string, value: ObjectValue, config: ResolvedInitInp
       value.profiles[profile].applicationUrl = url.origin;
     }
   } else if (file === '.devcontainer/devcontainer.json') {
-    requireString(value.name);
+    const mapping = devcontainerPortMapping(value, ports, defaults);
     value.name = `${displayName} (React + .NET + SQL)`;
-    const mapping = devcontainerPortMapping(value, ports);
     value.containerEnv.ASPNETCORE_URLS = replaceOnce(value.containerEnv.ASPNETCORE_URLS, /:\d+$/g, `:${ports.server}`);
     value.forwardPorts = value.forwardPorts.map((port: number) => mapping.has(String(port)) ? Number(mapping.get(String(port))) : port);
     const attrs: ObjectValue = {};
     for (const [key, attributes] of Object.entries(value.portsAttributes)) {
       const newKey = mapping.get(key) ?? key;
-      if (Object.hasOwn(attrs, newKey)) throw new Error();
+      if (Object.hasOwn(attrs, newKey)) return incompatible(file, `portsAttributes.${newKey}: destination port is occupied`);
       attrs[newKey] = attributes;
     }
-    attrs[ports.client].label = `Vite Dev Server (Internal - Use ${ports.server})`;
+    if (attrs[ports.client].label === `Vite Dev Server (Internal - Use ${defaults.server})`) {
+      attrs[ports.client].label = `Vite Dev Server (Internal - Use ${ports.server})`;
+    }
     value.portsAttributes = attrs;
     return mapping;
   }
@@ -180,12 +254,12 @@ function mergeChanges(before: any, after: any, current: any, path: string[], cha
   if (file === 'server/appsettings.Development.json' && pathName === 'ConnectionStrings.DefaultConnection') {
     // Only the host port is managed; developer credentials and other connection
     // options may have changed since initialization and must survive a rerun.
-    if (typeof current !== 'string') return incompatible(file);
+    if (typeof current !== 'string') return incompatible(file, pathName || 'JSON object');
     const pattern = /(?<=Server=localhost,)\d+(?=;)/g;
     const oldPort = singleMatch(before, pattern, file)[0];
     const newPort = singleMatch(after, pattern, file)[0];
     const currentPort = singleMatch(current, pattern, file)[0];
-    if (currentPort !== oldPort && currentPort !== newPort) return incompatible(file);
+    if (currentPort !== oldPort && currentPort !== newPort) return incompatible(file, pathName || 'JSON object');
     if (currentPort === newPort) return current;
     const next = current.replace(pattern, newPort);
     changes[pathName] = { before: current, after: next };
@@ -193,12 +267,12 @@ function mergeChanges(before: any, after: any, current: any, path: string[], cha
   }
   const ownsPath = managed.has(pathName);
   if (isDeepStrictEqual(before, after)) {
-    if (ownsPath) { if (!isDeepStrictEqual(current, after)) return incompatible(file); return current; }
+    if (ownsPath) { if (!isDeepStrictEqual(current, after)) return incompatible(file, pathName || 'JSON object'); return current; }
     if (![...managed].some((key) => !pathName || key.startsWith(`${pathName}.`))) return current;
   }
   if (before && after && typeof before === 'object' && typeof after === 'object' &&
       Array.isArray(before) === Array.isArray(after)) {
-    if (!current || typeof current !== 'object' || Array.isArray(current) !== Array.isArray(before)) return incompatible(file);
+    if (!current || typeof current !== 'object' || Array.isArray(current) !== Array.isArray(before)) return incompatible(file, pathName || 'JSON object');
     const result = structuredClone(current);
     for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
       const own = (object: ObjectValue, name: string) => Object.hasOwn(object, name) ? object[name] : undefined;
@@ -209,14 +283,14 @@ function mergeChanges(before: any, after: any, current: any, path: string[], cha
     return result;
   }
   if (isDeepStrictEqual(current, after)) return current;
-  if (!isDeepStrictEqual(current, before)) return incompatible(file);
+  if (!isDeepStrictEqual(current, before)) return incompatible(file, pathName || 'JSON object');
   changes[path.join('.')] = { before, after };
   return after;
 }
 
 function mergePortAttributes(before: ObjectValue, after: ObjectValue, current: any,
   changes: Record<string, unknown>, file: string, managed: Set<string>, mapping: PortMapping): ObjectValue {
-  if (!current || typeof current !== 'object' || Array.isArray(current)) return incompatible(file);
+  if (!current || typeof current !== 'object' || Array.isArray(current)) return incompatible(file, 'portsAttributes');
   const consumed = new Set<string>();
   const relevant = new Set<string>();
   const entries = Object.keys(before).map((oldKey) => {
@@ -228,20 +302,20 @@ function mergePortAttributes(before: ObjectValue, after: ObjectValue, current: a
     const candidates = keys.filter((key) => Object.hasOwn(current, key) &&
       current[key] && typeof current[key] === 'object' && !Array.isArray(current[key]) &&
       (current[key].label === before[oldKey].label || current[key].label === after[newKey].label));
-    if (candidates.length > 1) return incompatible(file);
+    if (candidates.length > 1) return incompatible(file, `portsAttributes.${newKey}: ambiguous ownership`);
     const currentKey = candidates[0];
     if (currentKey === undefined) {
       // Only renamed entries had addition/restoration semantics in the union merge.
-      if (oldKey === newKey) return incompatible(file);
+      if (oldKey === newKey) return incompatible(file, `portsAttributes.${oldKey}.label`);
     } else {
-      if (consumed.has(currentKey)) return incompatible(file);
+      if (consumed.has(currentKey)) return incompatible(file, `portsAttributes.${currentKey}: ambiguous ownership`);
       consumed.add(currentKey);
     }
     return { oldKey, newKey, currentKey };
   });
   // Unclaimed entries at either end are conflicting labels or occupied destinations.
   for (const key of relevant) {
-    if (Object.hasOwn(current, key) && !consumed.has(key)) return incompatible(file);
+    if (Object.hasOwn(current, key) && !consumed.has(key)) return incompatible(file, `portsAttributes.${key}: conflicting entry or occupied destination`);
   }
   const result = structuredClone(current);
   for (const key of consumed) delete result[key];

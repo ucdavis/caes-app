@@ -11,9 +11,11 @@ import type { GitRunner, InitDependencies, ResolvedInitInputs } from '../src/ini
 import { createTestSymlink } from './symlink-support.js';
 
 const config: ResolvedInitInputs = { appId: 'demo-app', displayName: 'Demo App', ports: { server: 6165, client: 6173, database: 15333 } };
+const templatePorts = { server: 5165, client: 5173, database: 14333 };
 const clientId = '12345678-1234-1234-1234-123456789abc';
 const options: InitOptions = { localOnly: true, noGit: true, json: true, yes: true, dryRun: false, manifest: '.caes-app.json' };
 const fixtureFiles = JSON.parse(await readFile(new URL('./fixtures/template.json', import.meta.url), 'utf8')) as Record<string, string>;
+const legacyContainer = await readFile(new URL('./fixtures/devcontainer-legacy.json', import.meta.url));
 const example = fixtureFiles['server/.env.example']!;
 const envFiles = new Map([['server/appsettings.Development.json', {
   content: Buffer.from(JSON.stringify({ ConnectionStrings: { DefaultConnection: 'Server=localhost,15333;Password=private;' } })), mode: 0o644,
@@ -50,13 +52,13 @@ describe('input and auth editing', () => {
     const current = fixtureFiles[name]!.replace(/\r?\n/g, eol)
       .replace(/^[\t ]*- "14333:1433"/m, '\t  -  "14333:1433"\t ');
     const inputs = { ...config, ports: { ...config.ports, database: port } };
-    const patched = customizeFile(name, source, Buffer.from(current), inputs);
+    const patched = customizeFile(name, source, Buffer.from(current), inputs, templatePorts);
     expect(patched.content.toString()).toBe(current.replace('14333:1433', `${port}:1433`));
-    const resumed = customizeFile(name, source, patched.content, inputs);
+    const resumed = customizeFile(name, source, patched.content, inputs, templatePorts);
     expect(resumed.content).toEqual(patched.content);
     expect(resumed.changes).toEqual({});
     const conflicting = Buffer.from(current.replace('14333:1433', '19999:1433'));
-    expect(() => customizeFile(name, source, conflicting, inputs)).toThrow(/managed configuration/);
+    expect(() => customizeFile(name, source, conflicting, inputs, templatePorts)).toThrow(/managed configuration/);
   });
 
   it('preserves dotenv comments, secrets and CRLF, and skips identical IDs', () => {
@@ -134,6 +136,208 @@ describe('local init integration', () => {
     }, { git, interactive: false, ...deps });
     return { target, stdout, stderr, code, payload: JSON.parse(stdout) };
   }
+
+  async function invokeHuman(args: string[] = [], deps: Partial<InitDependencies> = {}, destination?: string, rootArgs: string[] = []) {
+    const target = destination ?? join(directory, `demo-${++sequence}`);
+    let stdout = ''; let stderr = '';
+    const code = await runCli(['node', 'caes-app', ...rootArgs, 'init', target, '--local-only', ...args], {
+      stdout: (text) => { stdout += text; }, stderr: (text) => { stderr += text; },
+    }, { git, interactive: false, ...deps });
+    return { target, stdout, stderr, code };
+  }
+
+  const devcontainerFile = '.devcontainer/devcontainer.json';
+
+  it.each([
+    { generation: 'current', custom: false }, { generation: 'current', custom: true },
+    { generation: 'legacy', custom: false }, { generation: 'legacy', custom: true },
+  ])('initializes and resumes $generation devcontainers (custom ports=$custom)', async ({ generation, custom }) => {
+    const deps: Partial<InitDependencies> = { fetchTemplate: async (source) => {
+      const snapshot = await fetchTemplate(git, source);
+      if (generation === 'legacy') snapshot.files.set(devcontainerFile, { content: legacyContainer, mode: 0o644 });
+      return snapshot;
+    } };
+    const ports = custom ? config.ports : templatePorts;
+    const args = ['--yes', '--no-git', ...(custom ? ['--server-port', '6165', '--client-port', '6173', '--database-port', '15333'] : [])];
+    const first = await invoke(args, deps);
+    expect(first.code, first.stdout).toBe(0);
+    const path = join(first.target, devcontainerFile);
+    const bytes = await readFile(path);
+    const container = JSON.parse(bytes.toString());
+    expect(container.forwardPorts).toEqual(generation === 'legacy' ? [ports.server] : [ports.server, ports.client]);
+    expect(container.portsAttributes[ports.client]).toEqual({
+      label: generation === 'legacy' ? `Vite Dev Server (Internal - Use ${ports.server})` : 'Web App (Vite)',
+      onAutoForward: 'openBrowser',
+    });
+    expect(Object.keys(container.portsAttributes).sort()).toEqual(Object.values(ports).map(String).sort());
+    const again = await invoke(['--yes', '--no-git'], deps, first.target);
+    expect(again.code, again.stdout).toBe(0);
+    expect(again.payload.steps.every((item: any) => item.state === 'skipped')).toBe(true);
+    expect(await readFile(path)).toEqual(bytes);
+  });
+
+  it.each([
+    { scenario: 'missing entry', file: devcontainerFile, setting: 'portsAttributes.5173' },
+    { scenario: 'inconsistent URL', file: devcontainerFile, setting: 'containerEnv.ASPNETCORE_URLS' },
+    { scenario: 'invalid JSON', file: devcontainerFile, setting: 'JSON object' },
+    { scenario: 'invalid source port', file: 'client/vite.config.ts', setting: 'server.port' },
+    { scenario: 'duplicate source ports', file: 'client/vite.config.ts', setting: 'server.port' },
+    { scenario: 'inline duplicate port', file: 'client/vite.config.ts', setting: 'server.port' },
+    { scenario: 'port expression', file: 'client/vite.config.ts', setting: 'server.port' },
+    { scenario: 'multiline port expression', file: 'client/vite.config.ts', setting: 'server.port' },
+  ])('reports template errors before any writes: $scenario', async ({ scenario, file, setting }) => {
+    const deps: Partial<InitDependencies> = { fetchTemplate: async (source) => {
+      const snapshot = await fetchTemplate(git, source);
+      const original = snapshot.files.get(file)!;
+      let content: string;
+      if (scenario === 'invalid source port') content = original.content.toString().replace('port: 5173', 'port: 65536');
+      else if (scenario === 'duplicate source ports') content = original.content.toString().replace('port: 5173', 'port: 5165');
+      else if (scenario === 'inline duplicate port') content = original.content.toString().replace('port: 5173', 'port: 5173,\n    host: true, port: 9999');
+      else if (scenario === 'port expression') content = original.content.toString().replace('port: 5173', 'port: 5173 + 1');
+      else if (scenario === 'multiline port expression') content = original.content.toString().replace('port: 5173', 'port: 5173 // continued\n      + 1');
+      else if (scenario === 'invalid JSON') content = '{"sentinel-secret":';
+      else {
+        const value = JSON.parse(original.content.toString());
+        if (scenario === 'missing entry') delete value.portsAttributes['5173'];
+        else value.containerEnv.ASPNETCORE_URLS = 'http://sentinel-secret:9999';
+        content = JSON.stringify(value);
+      }
+      snapshot.files.set(file, { ...original, content: Buffer.from(content) });
+      return snapshot;
+    } };
+    const result = await invoke(['--yes', '--no-git'], deps);
+    expect(result.code).toBe(2);
+    expect(result.payload.error).toMatchObject({ code: 'template-error', message: expect.stringContaining(setting) });
+    expect(result.payload.preview).toMatchObject({ hasConflicts: false, exitCode: 2 });
+    expect(result.payload.preview.steps.filter((item: any) => item.state === 'failed')).toEqual([
+      expect.objectContaining({ id: file, target: join(result.target, file), state: 'failed' }),
+    ]);
+    expect(result.stdout).not.toMatch(/sentinel-secret|Restore the template/);
+    await expect(stat(result.target)).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const verbose of [false, true]) {
+      const human = await invokeHuman(['--yes', '--no-git', ...(verbose ? ['--verbose'] : [])], deps);
+      expect(human.code).toBe(2);
+      expect(human.stdout).toContain(verbose ? '[failed] file-write' : '[!] Failed:');
+      expect(human.stdout + human.stderr).toContain(setting);
+      expect(human.stdout + human.stderr).not.toMatch(/sentinel-secret|Restore the template/);
+      await expect(stat(human.target)).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    // A resumed target must not receive planned repairs before the failure.
+    const first = await invoke(['--yes', '--no-git']);
+    const manifest = await readFile(join(first.target, '.caes-app.json'));
+    const container = await readFile(join(first.target, devcontainerFile));
+    await rm(join(first.target, 'app.sln'));
+    const resumed = await invoke(['--yes', '--no-git'], deps, first.target);
+    expect(resumed.payload.error.code).toBe('template-error');
+    expect(await readFile(join(first.target, '.caes-app.json'))).toEqual(manifest);
+    expect(await readFile(join(first.target, devcontainerFile))).toEqual(container);
+    await expect(stat(join(first.target, 'app.sln'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps local devcontainer edits as conflicts with setting-specific diagnostics', async () => {
+    const first = await invoke(['--yes', '--no-git']);
+    const path = join(first.target, devcontainerFile);
+    const current = JSON.parse(await readFile(path, 'utf8'));
+    current.portsAttributes['5173'].label = 'sentinel-private-label';
+    const bytes = JSON.stringify(current);
+    await writeFile(path, bytes);
+    const result = await invoke(['--yes', '--no-git'], {}, first.target);
+    expect(result.payload.error.code).toBe('conflict');
+    expect(result.payload.preview.steps.find((item: any) => item.id === devcontainerFile)).toMatchObject({
+      state: 'conflict', preview: { message: expect.stringContaining('portsAttributes.5173.label') },
+    });
+    expect(result.stdout).not.toContain('sentinel-private-label');
+    expect(await readFile(path, 'utf8')).toBe(bytes);
+    const human = await invokeHuman(['--yes', '--no-git'], {}, first.target);
+    expect(human.code).toBe(2);
+    expect(human.stdout).toContain('[!] Conflict:');
+    expect(human.stdout).toContain('portsAttributes.5173.label');
+    expect(await readFile(path, 'utf8')).toBe(bytes);
+  });
+
+  it.each(['compact', 'root-verbose', 'init-verbose'])('renders a human dry run with %s options', async (mode) => {
+    const result = await invokeHuman(['--dry-run', '--no-git', '--manifest', 'metadata/app.json',
+      ...(mode === 'init-verbose' ? ['--verbose'] : [])], {}, undefined, mode === 'root-verbose' ? ['--verbose'] : []);
+    expect(result.code, result.stderr).toBe(0);
+    if (mode === 'compact') {
+      expect(result.stdout).toContain(`Target: ${result.target}`);
+      expect(result.stdout).toContain('|-- metadata/');
+      expect(result.stdout).toContain('[A] App settings and template revision');
+      expect(result.stdout).toContain('Template files:');
+      expect(result.stdout).toContain('Git: Skip initialization (--no-git)');
+      expect(result.stdout).not.toContain('  preview:');
+    } else {
+      expect(result.stdout).toContain('  preview:');
+      expect(result.stdout).toContain('  confirmation:');
+    }
+    expect(result.stdout).not.toContain('LocalDev123!');
+    await expect(stat(result.target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('leaves JSON unchanged with --verbose', async () => {
+    const first = await invoke();
+    const verbose = await invoke(['--verbose'], {}, first.target);
+    expect(verbose.code).toBe(first.code);
+    expect(verbose.stdout).toBe(first.stdout);
+  });
+
+  it.each([false, true])('renders the preview before interactive confirmation (verbose=%s)', async (verbose) => {
+    let confirmations = 0;
+    const result = await invokeHuman(verbose ? ['--verbose'] : [], {
+      interactive: true, input: async (_message, fallback) => fallback ?? '',
+      confirm: async (message) => { expect(message).toBe('Apply all listed local changes?'); confirmations++; return false; },
+    });
+    expect(result.code).toBe(0);
+    expect(confirmations).toBe(1);
+    expect(result.stdout).toContain(verbose ? '  preview:' : 'File changes:');
+    expect(result.stdout).toContain('Initialization cancelled');
+    await expect(stat(result.target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each([false, true])('renders preflight conflicts in the selected mode (verbose=%s)', async (verbose) => {
+    const result = await invokeHuman(['--dry-run', ...(verbose ? ['--verbose'] : [])], {
+      fetchTemplate: async (source) => {
+        const template = await fetchTemplate(git, source);
+        template.files.delete('server/.env.example');
+        return template;
+      },
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('missing server/.env.example');
+    expect(result.stdout).toContain(verbose ? '[conflict] file-write' : '[!] Conflict:');
+    if (!verbose) expect(result.stdout).toContain(`Target: ${result.target}`);
+    await expect(stat(result.target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each([false, true])('renders partial application failures in the selected mode (verbose=%s)', async (verbose) => {
+    const target = join(directory, `demo-${++sequence}`);
+    const result = await invokeHuman(['--yes', ...(verbose ? ['--verbose'] : [])], {
+      git: async (args, cwd, input) => args.includes('init') && cwd === target
+        ? { exitCode: 1, stdout: 'private-git-output' } : git(args, cwd, input),
+    }, target);
+    expect(result.code).toBe(1);
+    const failureOutput = result.stdout.split('Initialization failed;')[1]!;
+    expect(failureOutput).toContain(verbose ? '[failed] command' : 'git.init: [!] Failed:');
+    if (!verbose) {
+      expect(failureOutput).toMatch(/Files: \d+ added; 0 modified/);
+      expect(failureOutput).not.toContain('to copy');
+      expect(failureOutput).toContain('Issues: 0 conflicts; 1 failures');
+    }
+    expect(result.stdout + result.stderr).not.toContain('private-git-output');
+  });
+
+  it.each([false, true])('keeps unrelated dotenv values private in human previews (verbose=%s)', async (verbose) => {
+    const first = await invoke(['--yes', '--no-git']);
+    const path = join(first.target, 'server/.env');
+    const before = `${await readFile(path, 'utf8')}\nPRIVATE=unrelated-env-secret\n`;
+    await writeFile(path, before);
+    const result = await invokeHuman(['--dry-run', '--auth-client-id', clientId, ...(verbose ? ['--verbose'] : [])], {}, first.target);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('unrelated-env-secret');
+    expect(result.stdout).not.toContain('LocalDev123!');
+    expect(result.stdout).toContain(verbose ? 'Auth__ClientId' : '[M] Auth client ID');
+    expect(await readFile(path, 'utf8')).toBe(before);
+  });
 
   it('previews without writing and exposes provenance, never copied secrets', async () => {
     const result = await invoke(['--no-git']);
@@ -239,7 +443,7 @@ describe('local init integration', () => {
     expect(dev.ConnectionStrings.DefaultConnection).toContain('localhost,15333;');
     expect((await json('server/appsettings.json')).Auth.ClientId).toBe('<client-guid>');
     const container = await json('.devcontainer/devcontainer.json');
-    expect(container.forwardPorts).toEqual([6165]);
+    expect(container.forwardPorts).toEqual([6165, 6173]);
     expect(Object.keys(container.portsAttributes).sort()).toEqual(['15333', '6165', '6173']);
     expect(container.containerEnv.DB_CONNECTION).toContain('sql,1433');
     const env = await readFile(join(result.target, 'server/.env'), 'utf8');
@@ -314,7 +518,7 @@ describe('local init integration', () => {
     const result = JSON.parse(await readFile(path, 'utf8'));
     expect(Object.keys(result.portsAttributes).sort()).toEqual(['15333', '6165', '6173']);
     expect(result.portsAttributes['6165'].protocol).toBe('https');
-    expect(result.portsAttributes['6173']).toEqual({ label: 'Vite Dev Server (Internal - Use 6165)', onAutoForward: 'silent' });
+    expect(result.portsAttributes['6173']).toEqual({ label: 'Web App (Vite)', onAutoForward: 'silent' });
     expect(result.portsAttributes['15333']).toEqual({ label: 'SQL Server (Internal)' });
     const again = await invoke(['--yes', '--no-git'], {}, first.target);
     expect(again.code, again.stdout).toBe(0);
@@ -626,9 +830,9 @@ describe('local init integration', () => {
   });
 
   it('rejects incompatible source patch locations without disclosing config', async () => {
-    expect(() => customizeFile('server/server.csproj', Buffer.from('<Project/>'), Buffer.from('<Project/>'), config)).toThrow();
+    expect(() => customizeFile('server/server.csproj', Buffer.from('<Project/>'), Buffer.from('<Project/>'), config, templatePorts)).toThrow();
     const secretJson = Buffer.from('{"ConnectionStrings":{"DefaultConnection":"sentinel-secret"},broken}');
-    expect(() => customizeFile('server/appsettings.Development.json', secretJson, secretJson, config)).toThrow(/invalid JSON/);
-    try { customizeFile('server/appsettings.Development.json', secretJson, secretJson, config); } catch (error) { expect(String(error)).not.toContain('sentinel-secret'); }
+    expect(() => customizeFile('server/appsettings.Development.json', secretJson, secretJson, config, templatePorts)).toThrow(/invalid JSON/);
+    try { customizeFile('server/appsettings.Development.json', secretJson, secretJson, config, templatePorts); } catch (error) { expect(String(error)).not.toContain('sentinel-secret'); }
   });
 });

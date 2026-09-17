@@ -18,6 +18,7 @@ export {
   sanitizePreviewStep,
   type PreviewPlan,
   type PreviewStep,
+  type HumanPreviewOptions,
 } from './preview.js';
 export { redactCommand, redactCommandArgs, redactValue } from './redaction.js';
 export { initialize, collectInputs, validateInputs, manifestDestination } from './init.js';

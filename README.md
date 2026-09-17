@@ -16,6 +16,9 @@ npx caes-app init my-app --local-only
 # Preview without writing to the target
 npx caes-app init my-app --local-only --dry-run
 
+# Full per-file preview, including redacted change details
+npx caes-app init my-app --local-only --dry-run --verbose
+
 # Reproducible, noninteractive initialization
 npx caes-app init my-app --local-only --yes \
   --app-id my-app --display-name "My App" \
@@ -50,6 +53,19 @@ remain in place.
 | `--yes` | Use flags/defaults and apply without prompts. |
 | `--dry-run` | Preview only, even with `--yes`. Temporary template retrieval still occurs. |
 | `--json` | Noninteractive JSON preview; add `--yes` to apply. |
+| `--verbose` | Show every preview step, including skipped files, metadata, and redacted change details. Does not affect JSON output. |
+
+Human previews group ordinary template copies into a count and show customized
+files in an ASCII directory tree, with one line per file. Descriptions such as
+“Package name; database port” identify the changes without displaying values.
+`[A]` means add, `[M]` modify, and `[!]` a conflict or failure. Skipped files are
+counted rather than listed. Conflicts and failures always show their reasons.
+After an application failure, counts distinguish completed files from pending
+work (`[P]`); `[?]` marks a file whose existing state is unknown.
+
+Use `--verbose` before or after `init` for the full preview, including before/after
+details where available. Sensitive values remain redacted in compact, verbose,
+and JSON output; full local `.env` contents are never displayed.
 
 Local files and Git initialization share one confirmation. New repositories use
 `main`, with no remote, staged files, or commits. An existing repository rooted at
@@ -68,6 +84,16 @@ manifest fields are preserved. Conflicting managed values stop application; chan
 identity or ports and upgrading the template are outside this phase.
 LF and CRLF line endings are accepted in managed configuration; existing line
 endings and formatting are preserved when updating the Docker Compose port.
+Devcontainer ports are mapped using the pinned template's launch settings, Vite
+configuration, and Docker Compose settings, independently of display labels.
+Current labels and browser-forwarding behavior are preserved; legacy Vite labels
+that embed the server port are updated when that port changes.
+
+Unsupported template port configuration is reported as `template-error` with a
+failed preflight step identifying the file and setting. Update the CLI or report
+the template incompatibility; editing the destination cannot fix the source.
+Incompatible local managed edits remain `conflict` errors. Both stop before any
+destination writes and exit with status **2**.
 
 All destination checks complete before application. Files changed after preview
 cause a conflict. File replacements are atomic individually; the whole operation
@@ -81,7 +107,8 @@ use a structured error, including a preview when available. Apply results use
 File step IDs always use `/` separators; their `target` paths use the host's
 native filesystem format.
 Exit codes are **0** for success/preview/declined confirmation, **2** for invalid
-inputs or conflicts, and **1** for execution failures or unavailable Phase 3 mode.
+inputs, configuration incompatibilities, or conflicts, and **1** for execution
+failures or unavailable Phase 3 mode.
 
 ## Local sign-in setup
 
