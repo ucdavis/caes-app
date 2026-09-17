@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { CLI_VERSION } from '../src/constants.js';
-import { runCli } from '../src/cli.js';
+import { createProgram, runCli } from '../src/cli.js';
 import { createTestSymlink } from './symlink-support.js';
 
 async function invoke(args: string[]) {
@@ -46,6 +46,129 @@ describe('cli', () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('Usage: caes-app init');
+  });
+
+  it.each([
+    ['--json', 'init', '--unknown-option'],
+    ['init', '--json', '--unknown-option'],
+    ['init', '--unknown-option', '--json'],
+    ['--json', 'init', '--server-port'],
+    ['init', '--json', '--server-port'],
+    ['init', '--server-port', '--json'],
+    ['--json', 'init', 'one', 'two'],
+    ['init', '--json', 'one', 'two'],
+    ['--json', '--unknown-option'],
+    ['--json', '--manifest'],
+  ])('emits exactly one JSON parse error for %j', async (...args) => {
+    const result = await invoke(args);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      kind: 'error', error: { code: 'invalid-options', message: expect.any(String) },
+    });
+    expect(JSON.parse(result.stdout).error.message).toMatch(/unknown option|argument missing|too many arguments/);
+  });
+
+  it('suppresses Commander output when JSON is parsed on the init command', async () => {
+    let stderr = '';
+    const program = createProgram({ stdout: () => {}, stderr: (text) => { stderr += text; } });
+    program.enablePositionalOptions();
+    await expect(program.parseAsync(['init', '--json', '--unknown-option'], { from: 'user' }))
+      .rejects.toMatchObject({ code: 'commander.unknownOption', exitCode: 1 });
+    expect(program.opts().json).toBeUndefined();
+    expect(program.commands[0]!.opts().json).toBe(true);
+    expect(stderr).toBe('');
+  });
+
+  describe.each([false, true])('parser argument redaction (JSON=%s)', (json) => {
+    it.each(['--token', '--password', '--github-pat'])(
+      'redacts inline values for %s', async (flag) => {
+        const secret = 'EXAMPLE_SECRET with "quotes" = .*+$&';
+        const result = await invoke(['init', ...(json ? ['--json'] : []), `${flag}=${secret}`]);
+        expect(result.code).toBe(1);
+        expect(result.stdout + result.stderr).not.toContain(secret);
+        const message = `error: unknown option '${flag}=[REDACTED]'`;
+        if (json) {
+          expect(result.stderr).toBe('');
+          expect(JSON.parse(result.stdout)).toEqual({
+            kind: 'error', error: { code: 'invalid-options', message },
+          });
+        } else {
+          expect(result.stdout).toBe('');
+          expect(result.stderr).toContain(message);
+          expect(result.stderr).toContain('Usage: caes-app init');
+        }
+      },
+    );
+
+    it('keeps separate sensitive values out of diagnostics', async () => {
+      const result = await invoke([...(json ? ['--json'] : []), '--token', 'EXAMPLE_SECRET']);
+      expect(result.code).toBe(1);
+      expect(result.stdout + result.stderr).not.toContain('EXAMPLE_SECRET');
+      if (json) {
+        expect(result.stderr).toBe('');
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          kind: 'error', error: { code: 'invalid-options', message: expect.stringContaining("unknown option '--token'") },
+        });
+      } else {
+        expect(result.stdout).toBe('');
+        expect(result.stderr).toContain("unknown option '--token'");
+        expect(result.stderr).toContain('Usage: caes-app');
+      }
+    });
+  });
+
+  it('redacts root diagnostics with JSON after the sensitive option', async () => {
+    const result = await invoke(['--token=EXAMPLE_SECRET', '--json']);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      kind: 'error', error: { code: 'invalid-options', message: "error: unknown option '--token=[REDACTED]'" },
+    });
+  });
+
+  it('redacts direct program errors parsed from user arguments', async () => {
+    let stderr = '';
+    const program = createProgram({ stdout: () => {}, stderr: (text) => { stderr += text; } });
+    await expect(program.parseAsync(['init', '--token=EXAMPLE_SECRET'], { from: 'user' }))
+      .rejects.toMatchObject({ code: 'commander.unknownOption', exitCode: 1 });
+    expect(stderr).toContain("unknown option '--token=[REDACTED]'");
+    expect(stderr).not.toContain('EXAMPLE_SECRET');
+  });
+
+  it('leaves generated usage text unchanged when it contains a sensitive value', async () => {
+    const help = await invoke(['init', '--help']);
+    const result = await invoke(['init', '--token', 'app']);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain(help.stdout);
+  });
+
+  it.each([
+    ['init', '--unknown-option'],
+    ['init', '--server-port'],
+    ['init', 'one', 'two'],
+    ['--manifest', '--json', 'init', '--unknown-option'],
+    ['init', '--', '--json', 'extra'],
+  ])('retains human parse errors for %j', async (...args) => {
+    const result = await invoke(args);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('error:');
+    expect(result.stderr).toContain('Usage:');
+  });
+
+  it.each([
+    { args: ['--json', '--help'], output: 'Usage: caes-app' },
+    { args: ['--json', 'init', '--help'], output: 'Usage: caes-app init' },
+    { args: ['init', '--json', '--help'], output: 'Usage: caes-app init' },
+    { args: ['--json', '--version'], output: CLI_VERSION },
+  ])('preserves successful help/version output for $args', async ({ args, output }) => {
+    const result = await invoke(args);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain(output);
+    expect(result.stdout).not.toContain('"kind": "error"');
   });
 
   it('rejects --no-git without --local-only', async () => {

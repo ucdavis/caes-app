@@ -5,6 +5,7 @@ import type { ResolvedInitInputs, TemplateFile } from './init-types.js';
 
 export interface FilePatch { content: Buffer; changes: Record<string, unknown> }
 type ObjectValue = Record<string, any>;
+type PortMapping = ReadonlyMap<string, string>;
 
 function incompatible(file: string): never {
   throw new CommandError(`Unsupported or manually changed managed configuration in ${file}. Restore the template/generated value and retry.`, {
@@ -47,10 +48,11 @@ export function customizeFile(file: string, source: Buffer, current: Buffer, con
     'server/Properties/launchSettings.json', '.devcontainer/devcontainer.json'].includes(file)) {
     const original = parseJsonObject(source.toString(), file).value as ObjectValue;
     const desired = structuredClone(original);
-    try { configureJson(file, desired, config); } catch { return incompatible(file); }
+    let portMapping: PortMapping | undefined;
+    try { portMapping = configureJson(file, desired, config); } catch { return incompatible(file); }
     const parsed = parseJsonObject(current.toString(), file);
     const managed = managedPaths(file, original, desired);
-    const merged = mergeChanges(original, desired, parsed.value, [], changes, file, managed);
+    const merged = mergeChanges(original, desired, parsed.value, [], changes, file, managed, portMapping);
     return { content: Object.keys(changes).length ? Buffer.from(serializeJsonObject(merged, parsed)) : current, changes };
   }
   let text = current.toString();
@@ -79,7 +81,17 @@ export function customizeFile(file: string, source: Buffer, current: Buffer, con
   return { content: Object.keys(changes).length ? Buffer.from(text) : current, changes };
 }
 
-function configureJson(file: string, value: ObjectValue, config: ResolvedInitInputs): void {
+function devcontainerPortMapping(value: ObjectValue, ports: ResolvedInitInputs['ports']): PortMapping {
+  const oldServer = String(Number(new URL(value.containerEnv.ASPNETCORE_URLS).port));
+  const sourcePorts = Object.keys(value.portsAttributes);
+  const clientKey = sourcePorts.find((key) => String(value.portsAttributes[key].label).startsWith('Vite Dev Server'));
+  const databaseKey = sourcePorts.find((key) => String(value.portsAttributes[key].label).startsWith('SQL Server'));
+  if (!clientKey || !databaseKey || !value.portsAttributes[oldServer] ||
+      new Set([oldServer, clientKey, databaseKey]).size !== 3) throw new Error();
+  return new Map([[oldServer, String(ports.server)], [clientKey, String(ports.client)], [databaseKey, String(ports.database)]]);
+}
+
+function configureJson(file: string, value: ObjectValue, config: ResolvedInitInputs): PortMapping | undefined {
   const { appId, displayName, ports } = config;
   const requireString = (text: unknown): string => { if (typeof text !== 'string') throw new Error(); return text; };
   const replaceOnce = (text: unknown, regex: RegExp, replacement: string): string => {
@@ -124,22 +136,18 @@ function configureJson(file: string, value: ObjectValue, config: ResolvedInitInp
   } else if (file === '.devcontainer/devcontainer.json') {
     requireString(value.name);
     value.name = `${displayName} (React + .NET + SQL)`;
-    const oldServer = Number(new URL(value.containerEnv.ASPNETCORE_URLS).port);
-    const sourcePorts = Object.keys(value.portsAttributes);
-    const clientKey = sourcePorts.find((key) => String(value.portsAttributes[key].label).startsWith('Vite Dev Server'));
-    const databaseKey = sourcePorts.find((key) => String(value.portsAttributes[key].label).startsWith('SQL Server'));
-    if (!clientKey || !databaseKey || !value.portsAttributes[oldServer]) throw new Error();
-    const mapping: Record<string, number> = { [oldServer]: ports.server, [clientKey]: ports.client, [databaseKey]: ports.database };
+    const mapping = devcontainerPortMapping(value, ports);
     value.containerEnv.ASPNETCORE_URLS = replaceOnce(value.containerEnv.ASPNETCORE_URLS, /:\d+$/g, `:${ports.server}`);
-    value.forwardPorts = value.forwardPorts.map((port: number) => mapping[String(port)] ?? port);
+    value.forwardPorts = value.forwardPorts.map((port: number) => mapping.has(String(port)) ? Number(mapping.get(String(port))) : port);
     const attrs: ObjectValue = {};
     for (const [key, attributes] of Object.entries(value.portsAttributes)) {
-      const newKey = String(mapping[key] ?? key);
+      const newKey = mapping.get(key) ?? key;
       if (Object.hasOwn(attrs, newKey)) throw new Error();
       attrs[newKey] = attributes;
     }
     attrs[ports.client].label = `Vite Dev Server (Internal - Use ${ports.server})`;
     value.portsAttributes = attrs;
+    return mapping;
   }
 }
 
@@ -163,8 +171,12 @@ function managedPaths(file: string, before: ObjectValue, after: ObjectValue): Se
 
 // Three-way merge only managed leaves. Validate even unchanged defaults: a manual
 // port change must not silently disagree with the manifest and callback instructions.
-function mergeChanges(before: any, after: any, current: any, path: string[], changes: Record<string, unknown>, file: string, managed: Set<string>): any {
+function mergeChanges(before: any, after: any, current: any, path: string[], changes: Record<string, unknown>, file: string, managed: Set<string>, portMapping?: PortMapping): any {
   const pathName = path.join('.');
+  if (file === '.devcontainer/devcontainer.json' && pathName === 'portsAttributes' &&
+      portMapping && [...portMapping].some(([oldKey, newKey]) => oldKey !== newKey)) {
+    return mergePortAttributes(before, after, current, changes, file, managed, portMapping);
+  }
   if (file === 'server/appsettings.Development.json' && pathName === 'ConnectionStrings.DefaultConnection') {
     // Only the host port is managed; developer credentials and other connection
     // options may have changed since initialization and must survive a rerun.
@@ -190,7 +202,7 @@ function mergeChanges(before: any, after: any, current: any, path: string[], cha
     const result = structuredClone(current);
     for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
       const own = (object: ObjectValue, name: string) => Object.hasOwn(object, name) ? object[name] : undefined;
-      const next = mergeChanges(own(before, key), own(after, key), own(current, key), [...path, key], changes, file, managed);
+      const next = mergeChanges(own(before, key), own(after, key), own(current, key), [...path, key], changes, file, managed, portMapping);
       if (next === undefined) delete result[key];
       else Object.defineProperty(result, key, { value: next, enumerable: true, writable: true, configurable: true });
     }
@@ -200,6 +212,47 @@ function mergeChanges(before: any, after: any, current: any, path: string[], cha
   if (!isDeepStrictEqual(current, before)) return incompatible(file);
   changes[path.join('.')] = { before, after };
   return after;
+}
+
+function mergePortAttributes(before: ObjectValue, after: ObjectValue, current: any,
+  changes: Record<string, unknown>, file: string, managed: Set<string>, mapping: PortMapping): ObjectValue {
+  if (!current || typeof current !== 'object' || Array.isArray(current)) return incompatible(file);
+  const consumed = new Set<string>();
+  const relevant = new Set<string>();
+  const entries = Object.keys(before).map((oldKey) => {
+    const newKey = mapping.get(oldKey) ?? oldKey;
+    const keys = [...new Set([oldKey, newKey])];
+    keys.forEach((key) => relevant.add(key));
+    // Labels identify ownership when configured ports overlap template ports.
+    // Read every candidate before moving anything, including for swaps.
+    const candidates = keys.filter((key) => Object.hasOwn(current, key) &&
+      current[key] && typeof current[key] === 'object' && !Array.isArray(current[key]) &&
+      (current[key].label === before[oldKey].label || current[key].label === after[newKey].label));
+    if (candidates.length > 1) return incompatible(file);
+    const currentKey = candidates[0];
+    if (currentKey === undefined) {
+      // Only renamed entries had addition/restoration semantics in the union merge.
+      if (oldKey === newKey) return incompatible(file);
+    } else {
+      if (consumed.has(currentKey)) return incompatible(file);
+      consumed.add(currentKey);
+    }
+    return { oldKey, newKey, currentKey };
+  });
+  // Unclaimed entries at either end are conflicting labels or occupied destinations.
+  for (const key of relevant) {
+    if (Object.hasOwn(current, key) && !consumed.has(key)) return incompatible(file);
+  }
+  const result = structuredClone(current);
+  for (const key of consumed) delete result[key];
+  for (const { oldKey, newKey, currentKey } of entries) {
+    const next = currentKey === undefined ? structuredClone(after[newKey]) :
+      mergeChanges(before[oldKey], after[newKey], current[currentKey], ['portsAttributes', newKey], {}, file, managed);
+    Object.defineProperty(result, newKey, { value: next, enumerable: true, writable: true, configurable: true });
+  }
+  // A rename must trigger serialization even if no attribute leaves changed.
+  if (!isDeepStrictEqual(current, result)) changes.portsAttributes = { before: current, after: result };
+  return result;
 }
 
 export function patchAuth(text: string, clientId: string): string {

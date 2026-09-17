@@ -7,7 +7,7 @@ import { Command, CommanderError } from 'commander';
 import { CLI_NAME, CLI_VERSION, DEFAULT_MANIFEST_PATH } from './constants.js';
 import { CommandError, isCommandError } from './errors.js';
 import { renderJsonPreview, renderHumanPreview, type PreviewPlan } from './preview.js';
-import { redactValue } from './redaction.js';
+import { redactDiagnostic, redactValue } from './redaction.js';
 import { initialize } from './init.js';
 import type { InitDependencies } from './init-types.js';
 
@@ -55,7 +55,8 @@ export function createProgram(io: CliIo, dependencies: Partial<InitDependencies>
     .exitOverride()
     .configureOutput({
       writeOut: io.stdout,
-      writeErr: io.stderr,
+      writeErr: (text) => { if (!isJsonMode(program)) io.stderr(text); },
+      outputError: (text, write) => write(redactDiagnostic(text, parserArgs(program))),
     });
 
   addMvpOptions(program);
@@ -95,6 +96,11 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo, dep
     return 0;
   } catch (error) {
     if (error instanceof CommanderError) {
+      if (error.exitCode !== 0 && isJsonMode(program)) {
+        emitCommandError(new CommandError(redactDiagnostic(error.message, parserArgs(program)), {
+          code: 'invalid-options', exitCode: error.exitCode,
+        }), io, normalizeInitOptions({ json: true }));
+      }
       return error.exitCode;
     }
 
@@ -173,6 +179,17 @@ function validateInitOptions(options: InitOptions): void {
 
 function getErrorOptions(error: CommandError, program: Command): InitOptions {
   return (error as CommandErrorWithContext).cliOptions ?? normalizeInitOptions(program.opts<CommanderMvpOptions>());
+}
+
+function parserArgs(program: Command): readonly string[] {
+  // Commander 15 stores the original invocation here before parsing, but omits
+  // rawArgs from its types. Keep access isolated and cover both parse modes.
+  return (program as Command & { rawArgs: readonly string[] }).rawArgs;
+}
+
+function isJsonMode(program: Command): boolean {
+  return Boolean(program.opts<CommanderMvpOptions>().json ||
+    program.commands.find((command) => command.name() === 'init')?.opts<CommanderMvpOptions>().json);
 }
 
 function emitCommandError(error: CommandError, io: CliIo, options: InitOptions): void {

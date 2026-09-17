@@ -295,6 +295,32 @@ describe('local init integration', () => {
     expect((await stat(join(first.target, 'asset.bin'))).size).toBe(6);
   });
 
+  it.each(['template', 'configured'])('resumes configured ports with developer edits at %s keys', async (state) => {
+    const first = await invoke(['--yes', '--no-git', '--server-port', '6165', '--client-port', '6173', '--database-port', '15333']);
+    expect(first.code, first.stdout).toBe(0);
+    const path = join(first.target, '.devcontainer/devcontainer.json');
+    const current = JSON.parse(await readFile(path, 'utf8'));
+    if (state === 'template') current.portsAttributes = JSON.parse(fixtureFiles['.devcontainer/devcontainer.json']!).portsAttributes;
+    const server = state === 'template' ? '5165' : '6165';
+    const client = state === 'template' ? '5173' : '6173';
+    const database = state === 'template' ? '14333' : '15333';
+    current.portsAttributes[server].protocol = 'https';
+    current.portsAttributes[client].onAutoForward = 'silent';
+    delete current.portsAttributes[database].onAutoForward;
+    await writeFile(path, JSON.stringify(current));
+
+    const resumed = await invoke(['--yes', '--no-git'], {}, first.target);
+    expect(resumed.code, resumed.stdout).toBe(0);
+    const result = JSON.parse(await readFile(path, 'utf8'));
+    expect(Object.keys(result.portsAttributes).sort()).toEqual(['15333', '6165', '6173']);
+    expect(result.portsAttributes['6165'].protocol).toBe('https');
+    expect(result.portsAttributes['6173']).toEqual({ label: 'Vite Dev Server (Internal - Use 6165)', onAutoForward: 'silent' });
+    expect(result.portsAttributes['15333']).toEqual({ label: 'SQL Server (Internal)' });
+    const again = await invoke(['--yes', '--no-git'], {}, first.target);
+    expect(again.code, again.stdout).toBe(0);
+    expect(again.payload.steps.find((item: any) => item.id === '.devcontainer/devcontainer.json').state).toBe('skipped');
+  });
+
   it('blocks unrelated targets, reconfiguration, and divergent managed values', async () => {
     const target = join(directory, `demo-${++sequence}`); await mkdir(target); await writeFile(join(target, 'keep.txt'), 'keep');
     expect((await invoke(['--yes'], {}, target)).code).toBe(2);
