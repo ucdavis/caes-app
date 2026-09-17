@@ -16,6 +16,9 @@ npx caes-app init my-app --local-only
 # Preview without writing to the target
 npx caes-app init my-app --local-only --dry-run
 
+# Full per-file preview, including redacted change details
+npx caes-app init my-app --local-only --dry-run --verbose
+
 # Reproducible, noninteractive initialization
 npx caes-app init my-app --local-only --yes \
   --app-id my-app --display-name "My App" \
@@ -50,6 +53,19 @@ remain in place.
 | `--yes` | Use flags/defaults and apply without prompts. |
 | `--dry-run` | Preview only, even with `--yes`. Temporary template retrieval still occurs. |
 | `--json` | Noninteractive JSON preview; add `--yes` to apply. |
+| `--verbose` | Show every preview step, including skipped files, metadata, and redacted change details. Does not affect JSON output. |
+
+Human previews group ordinary template copies into a count and show customized
+files in an ASCII directory tree, with one line per file. Descriptions such as
+“Package name; database port” identify the changes without displaying values.
+`[A]` means add, `[M]` modify, and `[!]` a conflict or failure. Skipped files are
+counted rather than listed. Conflicts and failures always show their reasons.
+After an application failure, counts distinguish completed files from pending
+work (`[P]`); `[?]` marks a file whose existing state is unknown.
+
+Use `--verbose` before or after `init` for the full preview, including before/after
+details where available. Sensitive values remain redacted in compact, verbose,
+and JSON output; full local `.env` contents are never displayed.
 
 Local files and Git initialization share one confirmation. New repositories use
 `main`, with no remote, staged files, or commits. An existing repository rooted at

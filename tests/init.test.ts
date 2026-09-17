@@ -135,6 +135,99 @@ describe('local init integration', () => {
     return { target, stdout, stderr, code, payload: JSON.parse(stdout) };
   }
 
+  async function invokeHuman(args: string[] = [], deps: Partial<InitDependencies> = {}, destination?: string, rootArgs: string[] = []) {
+    const target = destination ?? join(directory, `demo-${++sequence}`);
+    let stdout = ''; let stderr = '';
+    const code = await runCli(['node', 'caes-app', ...rootArgs, 'init', target, '--local-only', ...args], {
+      stdout: (text) => { stdout += text; }, stderr: (text) => { stderr += text; },
+    }, { git, interactive: false, ...deps });
+    return { target, stdout, stderr, code };
+  }
+
+  it.each(['compact', 'root-verbose', 'init-verbose'])('renders a human dry run with %s options', async (mode) => {
+    const result = await invokeHuman(['--dry-run', '--no-git', '--manifest', 'metadata/app.json',
+      ...(mode === 'init-verbose' ? ['--verbose'] : [])], {}, undefined, mode === 'root-verbose' ? ['--verbose'] : []);
+    expect(result.code, result.stderr).toBe(0);
+    if (mode === 'compact') {
+      expect(result.stdout).toContain(`Target: ${result.target}`);
+      expect(result.stdout).toContain('|-- metadata/');
+      expect(result.stdout).toContain('[A] App settings and template revision');
+      expect(result.stdout).toContain('Template files:');
+      expect(result.stdout).toContain('Git: Skip initialization (--no-git)');
+      expect(result.stdout).not.toContain('  preview:');
+    } else {
+      expect(result.stdout).toContain('  preview:');
+      expect(result.stdout).toContain('  confirmation:');
+    }
+    expect(result.stdout).not.toContain('LocalDev123!');
+    await expect(stat(result.target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('leaves JSON unchanged with --verbose', async () => {
+    const first = await invoke();
+    const verbose = await invoke(['--verbose'], {}, first.target);
+    expect(verbose.code).toBe(first.code);
+    expect(verbose.stdout).toBe(first.stdout);
+  });
+
+  it.each([false, true])('renders the preview before interactive confirmation (verbose=%s)', async (verbose) => {
+    let confirmations = 0;
+    const result = await invokeHuman(verbose ? ['--verbose'] : [], {
+      interactive: true, input: async (_message, fallback) => fallback ?? '',
+      confirm: async (message) => { expect(message).toBe('Apply all listed local changes?'); confirmations++; return false; },
+    });
+    expect(result.code).toBe(0);
+    expect(confirmations).toBe(1);
+    expect(result.stdout).toContain(verbose ? '  preview:' : 'File changes:');
+    expect(result.stdout).toContain('Initialization cancelled');
+    await expect(stat(result.target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each([false, true])('renders preflight conflicts in the selected mode (verbose=%s)', async (verbose) => {
+    const result = await invokeHuman(['--dry-run', ...(verbose ? ['--verbose'] : [])], {
+      fetchTemplate: async (source) => {
+        const template = await fetchTemplate(git, source);
+        template.files.delete('server/.env.example');
+        return template;
+      },
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain('missing server/.env.example');
+    expect(result.stdout).toContain(verbose ? '[conflict] file-write' : '[!] Conflict:');
+    if (!verbose) expect(result.stdout).toContain(`Target: ${result.target}`);
+    await expect(stat(result.target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each([false, true])('renders partial application failures in the selected mode (verbose=%s)', async (verbose) => {
+    const target = join(directory, `demo-${++sequence}`);
+    const result = await invokeHuman(['--yes', ...(verbose ? ['--verbose'] : [])], {
+      git: async (args, cwd, input) => args.includes('init') && cwd === target
+        ? { exitCode: 1, stdout: 'private-git-output' } : git(args, cwd, input),
+    }, target);
+    expect(result.code).toBe(1);
+    const failureOutput = result.stdout.split('Initialization failed;')[1]!;
+    expect(failureOutput).toContain(verbose ? '[failed] command' : 'git.init: [!] Failed:');
+    if (!verbose) {
+      expect(failureOutput).toMatch(/Files: \d+ added; 0 modified/);
+      expect(failureOutput).not.toContain('to copy');
+      expect(failureOutput).toContain('Issues: 0 conflicts; 1 failures');
+    }
+    expect(result.stdout + result.stderr).not.toContain('private-git-output');
+  });
+
+  it.each([false, true])('keeps unrelated dotenv values private in human previews (verbose=%s)', async (verbose) => {
+    const first = await invoke(['--yes', '--no-git']);
+    const path = join(first.target, 'server/.env');
+    const before = `${await readFile(path, 'utf8')}\nPRIVATE=unrelated-env-secret\n`;
+    await writeFile(path, before);
+    const result = await invokeHuman(['--dry-run', '--auth-client-id', clientId, ...(verbose ? ['--verbose'] : [])], {}, first.target);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('unrelated-env-secret');
+    expect(result.stdout).not.toContain('LocalDev123!');
+    expect(result.stdout).toContain(verbose ? 'Auth__ClientId' : '[M] Auth client ID');
+    expect(await readFile(path, 'utf8')).toBe(before);
+  });
+
   it('previews without writing and exposes provenance, never copied secrets', async () => {
     const result = await invoke(['--no-git']);
     expect(result.code).toBe(0);

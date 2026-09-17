@@ -149,6 +149,7 @@ export async function initialize(invocation: InitInvocation, io: CliIo, injected
   };
   const { options } = invocation;
   const target = resolve(invocation.targetDir);
+  const previewOptions = { verbose: Boolean(options.verbose), targetDir: target };
   const plan: PreviewPlan = { command: 'init', summary: `Initialize ${target}`, steps: [] };
   let cleanup: (() => Promise<void>) | undefined;
   let applying = false;
@@ -161,7 +162,8 @@ export async function initialize(invocation: InitInvocation, io: CliIo, injected
     if (options.json) io.stdout(`${JSON.stringify(redactValue(result), null, 2)}\n`);
     else {
       io.stdout(status === 'success' ? 'Scaffolding completed. Runtime readiness is unverified.\n' : status === 'cancelled' ? 'Initialization cancelled; no changes applied.\n' : 'Initialization failed; completed steps remain available for a resumable run.\n');
-      if (status === 'failure') io.stdout(renderHumanPreview(plan));
+      if (status === 'failure') io.stdout(renderHumanPreview(plan, { ...previewOptions, applied: true,
+        ...(activeStep && error ? { failure: { stepId: activeStep.id, message: error.message } } : {}) }));
       if (error) io.stderr(`${error.message}\n`);
       if (status === 'success') io.stdout(nextSteps.map((line) => `- ${line}`).join('\n') + '\n');
     }
@@ -249,10 +251,10 @@ export async function initialize(invocation: InitInvocation, io: CliIo, injected
     cleanup = undefined;
     if (hasConflicts(plan)) throw conflict('Init has conflicts. Resolve the listed issues and retry; no changes were applied.');
     if (options.dryRun || (options.json && !options.yes)) {
-      io.stdout(options.json ? `${JSON.stringify(renderJsonPreview(plan), null, 2)}\n` : renderHumanPreview(plan));
+      io.stdout(options.json ? `${JSON.stringify(renderJsonPreview(plan), null, 2)}\n` : renderHumanPreview(plan, previewOptions));
       return;
     }
-    if (!options.json) io.stdout(renderHumanPreview(plan));
+    if (!options.json) io.stdout(renderHumanPreview(plan, previewOptions));
     if (!options.yes) {
       if (!deps.interactive) throw new CommandError('Noninteractive initialization requires --yes to apply or --dry-run to preview.', { code: 'invalid-options', exitCode: 2 });
       if (!await deps.confirm('Apply all listed local changes?')) { emitResult('cancelled'); return; }
@@ -292,7 +294,7 @@ export async function initialize(invocation: InitInvocation, io: CliIo, injected
       Object.assign(failure, { emitted: true });
     } else {
       if (!hasConflicts(plan)) plan.steps.push(step('init.validation', 'manual-prompt', target, failure.exitCode === 2 ? 'conflict' : 'failed', { message: failure.message }));
-      Object.assign(failure, { preview: plan });
+      Object.assign(failure, { preview: plan, previewOptions });
     }
     throw failure;
   } finally { await cleanup?.(); }

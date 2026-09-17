@@ -6,7 +6,7 @@ import { Command, CommanderError } from 'commander';
 
 import { CLI_NAME, CLI_VERSION, DEFAULT_MANIFEST_PATH } from './constants.js';
 import { CommandError, isCommandError } from './errors.js';
-import { renderJsonPreview, renderHumanPreview, type PreviewPlan } from './preview.js';
+import { renderJsonPreview, renderHumanPreview, type PreviewPlan, type HumanPreviewOptions } from './preview.js';
 import { redactDiagnostic, redactValue } from './redaction.js';
 import { initialize } from './init.js';
 import type { InitDependencies } from './init-types.js';
@@ -20,6 +20,7 @@ export interface InitOptions {
   dryRun: boolean;
   yes: boolean;
   json: boolean;
+  verbose?: boolean;
   manifest: string;
   localOnly: boolean;
   noGit: boolean;
@@ -43,6 +44,7 @@ export interface InitInvocation {
 type CommandErrorWithContext = CommandError & {
   cliOptions?: InitOptions;
   preview?: PreviewPlan;
+  previewOptions?: HumanPreviewOptions;
 };
 
 export function createProgram(io: CliIo, dependencies: Partial<InitDependencies> = {}): Command {
@@ -131,6 +133,7 @@ function addMvpOptions(command: Command): Command {
     .option('--dry-run', 'build and print the preview plan without applying it')
     .option('--yes', 'skip non-secret confirmations')
     .option('--json', 'emit machine-readable output with sensitive values redacted')
+    .option('--verbose', 'show the full human preview with redacted details')
     .option('--manifest <path>', 'read/write a manifest path other than .caes-app.json', DEFAULT_MANIFEST_PATH)
     .option('--local-only', 'perform no GitHub or Azure mutations')
     .option('--no-git', 'with --local-only, skip target git initialization (Git is still required for retrieval)');
@@ -141,7 +144,7 @@ function collectMvpOptions(command: Command): InitOptions {
   const localOptions = command.opts<CommanderMvpOptions>();
   const merged: CommanderMvpOptions = { ...parentOptions };
 
-  for (const key of ['dryRun', 'yes', 'json', 'manifest', 'localOnly', 'git', 'noGit', 'appId', 'displayName', 'serverPort', 'clientPort', 'databasePort', 'authClientId'] as const) {
+  for (const key of ['dryRun', 'yes', 'json', 'verbose', 'manifest', 'localOnly', 'git', 'noGit', 'appId', 'displayName', 'serverPort', 'clientPort', 'databasePort', 'authClientId'] as const) {
     const source = command.getOptionValueSource(key);
     if (source && source !== 'default') {
       merged[key] = localOptions[key] as never;
@@ -159,6 +162,7 @@ function normalizeInitOptions(options: CommanderMvpOptions): InitOptions {
     dryRun: Boolean(options.dryRun),
     yes: Boolean(options.yes),
     json: Boolean(options.json),
+    verbose: Boolean(options.verbose),
     manifest: options.manifest ?? DEFAULT_MANIFEST_PATH,
     localOnly: Boolean(options.localOnly),
     noGit: Boolean(options.noGit) || options.git === false,
@@ -217,7 +221,7 @@ function emitCommandError(error: CommandError, io: CliIo, options: InitOptions):
   }
 
   if (maybePreview) {
-    io.stdout(renderHumanPreview(maybePreview));
+    io.stdout(renderHumanPreview(maybePreview, { ...(error as CommandErrorWithContext).previewOptions, verbose: Boolean(options.verbose) }));
   }
   io.stderr(`${error.message}\n`);
 }
