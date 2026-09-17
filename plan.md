@@ -55,7 +55,7 @@ Implementation notes:
 
 - [ ] Add lightweight prerequisite checks to both init modes: Git availability/template access for local-only; Git plus `gh` availability, GitHub authentication, and intended account/owner context for GitHub mode. Include actionable errors and a short README setup section.
 - [ ] Implement the init path that creates and clones a GitHub repo from the default branch of `ucdavis/web-app-template`.
-- [ ] Add GitHub-only `--repo`, `--visibility public|private`, and `--resume-existing` inputs. Default new repositories to owner 'ucdavis', app ID, and public visibility; use manifest values on reruns. Scope GitHub initialization to `github.com`.
+- [ ] Add GitHub-only `--repo`, `--visibility public|private`, and `--resume-existing` inputs. Default new repositories to owner `ucdavis`, app ID, and public visibility; use manifest values on reruns. Scope GitHub initialization to `github.com`.
 - [ ] Use `gh repo create --template ucdavis/web-app-template` to create the remote repo, then `git clone` the new repo into the exact `target-dir`.
 - [ ] Account for Git clone authentication separately from `gh` authentication. If cloning fails after remote creation, report the repo URL and exact `--resume-existing` command; support recovery into an absent/empty target or from a matching completed, uncustomized clone without a manifest.
 - [ ] Preview the complete create/clone/customization plan, including account and destination, and collect both repository and file-edit confirmations before mutations.
@@ -153,7 +153,7 @@ Implementation notes:
   - In GitHub repo mode, creates a new GitHub repo from the template with `gh repo create --template ucdavis/web-app-template`, clones that new project repo into the exact `target-dir` with `git clone`, applies local customization patches inside the clone, and does not run a separate `git init`.
   - In local-only mode, copies/downloads the template default branch directly into `target-dir`, applies local customization patches, writes `.caes-app.json`, and initializes git by default.
   - Collects app name, display name, GitHub owner/repo, visibility, and dev ports.
-  - Accepts GitHub-only `--owner <owner>`, `--repo <name>`, and `--visibility public|private`. New-run defaults are the effective authenticated account, app ID, and public visibility. Existing manifest values supply defaults on reruns; supplied mismatches become conflicts. GitHub initialization targets only `github.com`.
+  - Accepts GitHub-only `--owner <owner>`, `--repo <name>`, and `--visibility public|private`. New-run defaults are owner `ucdavis`, app ID, and public visibility, regardless of the authenticated account. Existing manifest values supply defaults on reruns; supplied mismatches become conflicts. GitHub initialization targets only `github.com`.
   - Accepts GitHub-only `--resume-existing` to explicitly reuse a selected existing remote when no local manifest is available. Normal matching-manifest reruns do not require the flag. Reject all four GitHub-specific options with `--local-only`.
   - Accepts init-specific `--auth-client-id <guid>` and an optional interactive prompt for an existing user sign-in application ID; noninteractive runs may omit it.
   - Creates a committable non-secret `.caes-app.json` manifest in the generated app.
@@ -412,7 +412,7 @@ The following describes implementation/release coverage. Phase 1 and Phase 2 inc
 - Unit-test package config, command-wide MVP flags, manifest validation, unknown-field preservation, future schema rejection, local-only manifest shape, and JSON file patching.
 - Unit-test wizard-to-config mapping, optional auth input/omission and validation, targeted `.env` preservation/idempotency/conflicts, configured-port callback instructions, generated-value previewing, default-branch-only template source recording, and redaction of unrelated local values.
 - Unit-test preview plan states and confirmation scopes for file edits, local git, GitHub repo creation, target directory conflicts/resume, `--dry-run`, `--json`, `--json --yes`, `--local-only`, and `--no-git`.
-- Test GitHub input defaults (effective account, app ID, public visibility), explicit private visibility and owner/repo overrides, manifest defaults on reruns, separate repository-name validation, and rejection of GitHub-specific options with `--local-only`.
+- Test GitHub input defaults (owner `ucdavis` regardless of the authenticated account, app ID, public visibility), explicit private visibility and owner/repo overrides, manifest defaults on reruns, separate repository-name validation, and rejection of GitHub-specific options with `--local-only`.
 - Integration-test `init` against a temp directory using mocked `gh` and `git` executables.
 - Test missing Git/`gh`, failed authentication, and actionable redacted human/JSON errors before mutations. Verify local-only init does not require `gh`, `az`, .NET, or Docker, and that `--no-git` still requires Git for retrieval.
 - Integration-test GitHub repo preview/create/clone/customize flow and exact clone destination with mocked `gh`. Verify preview-only runs and either confirmation being declined cause no project or remote mutations.
@@ -449,7 +449,7 @@ The following describes implementation/release coverage. Phase 1 and Phase 2 inc
 - Local-only mode still records the template default branch commit SHA for traceability.
 - Local-only mode performs no `gh` mutations but may still perform non-mutating template source resolution, copy, or download steps needed for traceability.
 - The GitHub template creation path creates the remote with `gh repo create --template`, then clones explicitly so `target-dir` is honored exactly.
-- Phase 3 targets the small team's `github.com` workflow: new repos default to public visibility, the effective authenticated owner, and the app ID as repo name. `main` is the established default branch; record the actual branch without adding branch-policy machinery.
+- Phase 3 targets the small team's `github.com` workflow: new repos default to public visibility, owner `ucdavis` regardless of the authenticated account, and the app ID as repo name. `main` is the established default branch; record the actual branch without adding branch-policy machinery.
 - GitHub init uses explicit, limited recovery and actionable manual instructions. Recovery journals, rollback, automatic cleanup, arbitrary repository adoption, and local-only-to-GitHub conversion are outside Phase 3.
 - Pre-`caes-app` generated apps are not automation-compatible in this plan.
 - The trusted-template model is acceptable for this team-specific tool; no sandboxed execution architecture is needed for template sync scripts.
