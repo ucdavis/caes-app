@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { customizeFile, templateDefaults } from '../src/init-patches.js';
-import type { ResolvedInitInputs } from '../src/init-types.js';
+import type { ResolvedInitInputs, TemplateFile } from '../src/init-types.js';
 
 const file = '.devcontainer/devcontainer.json';
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures/template.json', import.meta.url), 'utf8'));
@@ -247,6 +247,115 @@ describe('template port compatibility', () => {
       expect.objectContaining({ code: 'invalid-json' }),
     );
   });
+});
+
+describe('Vite port literals', () => {
+  const name = 'client/vite.config.ts';
+  const vite = (property: string) => Buffer.from(
+    `const target = 'http://localhost:5165';\nexport default {\n  server: {\n${property}\n  },\n};\n`,
+  );
+  const source = vite('    port: 5173,');
+  const defaults = (content: Buffer) => {
+    const files = new Map<string, TemplateFile>(Object.entries(fixtures as Record<string, string>).map(([file, text]) =>
+      [file, { content: Buffer.from(text), mode: 0o644 }]));
+    files.set(name, { content, mode: 0o644 });
+    return templateDefaults(files);
+  };
+
+  it.each([
+    '    port: 5173 + 1,',
+    '    port: 5173\n      + 1,',
+    '    port: 5173 // continued\n      + 1,',
+    '    port: 5173\n      /* continued\n         expression */ + 1,',
+    '    port: 5173 /* comment */ + 1 /* another comment */,',
+    '    port: 5173.5,',
+    '    port: 5173e2,',
+    '    port: 5_173,',
+    '    port: 05173,',
+    '    port: 0,',
+    '    port: 65536,',
+    '    port: getPort(),',
+    '    port:\n      5173,',
+    '    port: 5173 /* unclosed',
+    '    host: true,',
+    '    port: 5173,\n    port: 6173,',
+    '    port: 5173,\n    port: 6173 + 1,',
+    '    port: 5173, port: 6173,',
+    '    port: 5173\n    host: true,',
+  ])('rejects unsupported properties in extraction and customization: %s', (property) => {
+    const invalid = vite(property);
+    expect(() => defaults(invalid)).toThrow(expect.objectContaining({
+      code: 'template-error', file: name, message: expect.stringContaining('server.port'),
+    }));
+    expect(() => customizeFile(name, invalid, invalid, config, templatePorts)).toThrow(
+      expect.objectContaining({ code: 'conflict' }),
+    );
+    expect(() => customizeFile(name, source, invalid, config, templatePorts)).toThrow(
+      expect.objectContaining({ code: 'conflict' }),
+    );
+  });
+
+  it.each(['\n', '\r\n'])('rejects inline duplicates with %j line endings', (eol) => {
+    for (const duplicate of ['port: 9999', 'port: 9999 + 1', 'port \t: getPort()']) {
+      for (const lines of [
+        ['    port: 5173,', `    host: true, ${duplicate},`],
+        [`    host: true, ${duplicate},`, '    port: 5173,'],
+      ]) {
+        const invalid = Buffer.from(vite(lines.join('\n')).toString().replaceAll('\n', eol));
+        expect(() => defaults(invalid)).toThrow(expect.objectContaining({
+          code: 'template-error', file: name, message: expect.stringContaining('server.port'),
+        }));
+        for (const client of [templatePorts.client, config.ports.client, 9999]) {
+          const inputs = { ...config, ports: { ...config.ports, client } };
+          expect(() => customizeFile(name, invalid, source, inputs, templatePorts)).toThrow(
+            expect.objectContaining({ code: 'conflict' }),
+          );
+          expect(() => customizeFile(name, source, invalid, inputs, templatePorts)).toThrow(
+            expect.objectContaining({ code: 'conflict' }),
+          );
+        }
+      }
+    }
+  });
+
+  const properties = [
+    '    port: 5173,',
+    '\t port \t:\t 5173 \t, \t// local comment',
+    '    port: 5173 /* before comma */, /* after comma */ // trailing',
+    '    port: 5173 /* stars ** and / inside */ ,',
+    '    port: 5173',
+    '    port: 5173 // last property',
+    '    port: 5173 /* last property */\n\n    // following comment\n    /* multiple\n       lines */',
+  ];
+  it.each(['\n', '\r\n'])('preserves current formatting and resumes with %j line endings', (eol) => {
+    for (const property of properties) {
+      const current = Buffer.from(vite(property).toString().replaceAll('\n', eol));
+      expect(defaults(current)).toEqual(templatePorts);
+      for (const port of [templatePorts.client, config.ports.client]) {
+        // Keep the backend unchanged so the expected diff isolates the port span.
+        const inputs = { ...config, ports: { ...templatePorts, client: port } };
+        const patched = customizeFile(name, source, current, inputs, templatePorts);
+        expect(patched.content.toString()).toBe(current.toString().replace('5173', String(port)));
+        expect(patched.changes).toEqual(port === templatePorts.client ? {} : {
+          'server.port': { before: 5173, after: port },
+        });
+        if (port === templatePorts.client) expect(patched.content).toBe(current);
+        const resumed = customizeFile(name, source, patched.content, inputs, templatePorts);
+        expect(resumed.content).toBe(patched.content);
+        expect(resumed.changes).toEqual({});
+        const conflicting = Buffer.from(current.toString().replace('5173', '9999'));
+        expect(() => customizeFile(name, source, conflicting, inputs, templatePorts)).toThrow(
+          expect.objectContaining({ code: 'conflict' }),
+        );
+      }
+    }
+  });
+
+  it.each(['port: 5173', 'port: 5173 // comment', 'port: 5173 /* comment */\n'])(
+    'accepts a standalone property ending at EOF: %s', (property) => {
+      expect(defaults(Buffer.from(property))).toEqual(templatePorts);
+    },
+  );
 });
 
 describe('template port defaults', () => {

@@ -8,6 +8,11 @@ type ObjectValue = Record<string, any>;
 type PortMapping = ReadonlyMap<string, string>;
 type Ports = ResolvedInitInputs['ports'];
 
+const vitePortTrivia = String.raw`(?:[\t ]|/\*(?:[^*\r\n]|\*(?!/))*\*/)*`;
+const vitePortPattern = new RegExp(
+  String.raw`^([\t ]*port[\t ]*:[\t ]*)(0|[1-9]\d*)${vitePortTrivia}(,?)${vitePortTrivia}(?://[^\r\n]*)?\r?$`, 'gm',
+);
+
 function incompatible(file: string, setting?: string): never {
   throw new CommandError(`Unsupported or manually changed managed configuration in ${file}${setting ? ` (${setting})` : ''}. Restore the template/generated value and retry.`, {
     code: 'conflict', exitCode: 2,
@@ -55,7 +60,7 @@ export function templateDefaults(files: Map<string, TemplateFile>): ResolvedInit
     server: readPort('server/Properties/launchSettings.json', 'profiles.http-cli.applicationUrl',
       (text) => httpPort(JSON.parse(text).profiles['http-cli'].applicationUrl)),
     client: readPort('client/vite.config.ts', 'server.port',
-      (text) => Number(singleMatch(text, /\bport:\s*(\d+)(?![\w.])/g, 'client/vite.config.ts')[1])),
+      (text) => matchVitePort(text).value),
     database: readPort('.devcontainer/docker-compose.yml', 'SQL host port',
       (text) => Number(singleMatch(text, /^[\t ]*-[\t ]*"(\d+):1433"[\t ]*\r?$/gm, '.devcontainer/docker-compose.yml')[1])),
   };
@@ -65,6 +70,24 @@ function singleMatch(text: string, pattern: RegExp, file: string): RegExpMatchAr
   const matches = [...text.matchAll(pattern)];
   if (matches.length !== 1) return incompatible(file);
   return matches[0]!;
+}
+
+function matchVitePort(text: string): { value: number; offset: number; length: number } {
+  const file = 'client/vite.config.ts';
+  // Count candidates anywhere, beyond the strict literal matcher, so inline or
+  // non-literal duplicates cannot be ignored.
+  singleMatch(text, /\bport[\t ]*:/g, file);
+  const match = singleMatch(text, vitePortPattern, file);
+  const value = Number(match[2]);
+  if (!validPort(value)) return incompatible(file, 'server.port');
+  if (!match[3]) {
+    // Without a comma, a newline/comment may continue an expression. Only an
+    // object close (or EOF for a standalone property) can terminate this value.
+    const following = text.slice(match.index! + match[0].length)
+      .replace(/^(?:\s+|\/\/[^\r\n]*(?:\r?\n|$)|\/\*[\s\S]*?\*\/)*/, '');
+    if (following && !following.startsWith('}')) return incompatible(file, 'server.port');
+  }
+  return { value, offset: match.index! + match[1]!.length, length: match[2]!.length };
 }
 
 export function customizeFile(file: string, source: Buffer, current: Buffer, config: ResolvedInitInputs, defaults: Ports): FilePatch {
@@ -101,7 +124,14 @@ export function customizeFile(file: string, source: Buffer, current: Buffer, con
     }
   };
   if (file === 'client/vite.config.ts') {
-    edit('server.port', /\bport:\s*\d+/g, () => `port: ${config.ports.client}`);
+    const old = matchVitePort(original);
+    const found = matchVitePort(text);
+    const next = config.ports.client;
+    if (found.value !== old.value && found.value !== next) return incompatible(file, 'server.port');
+    if (found.value !== next) {
+      text = text.slice(0, found.offset) + next + text.slice(found.offset + found.length);
+      changes['server.port'] = { before: found.value, after: next };
+    }
     edit('backend fallback', /(['"])http:\/\/localhost:\d+\1/g, (m) => `${m[1]}http://localhost:${config.ports.server}${m[1]}`);
   } else if (file === 'server/server.csproj') {
     edit('SpaProxyServerUrl', /<SpaProxyServerUrl>[^<]+<\/SpaProxyServerUrl>/g,

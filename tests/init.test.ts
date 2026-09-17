@@ -182,6 +182,9 @@ describe('local init integration', () => {
     { scenario: 'invalid JSON', file: devcontainerFile, setting: 'JSON object' },
     { scenario: 'invalid source port', file: 'client/vite.config.ts', setting: 'server.port' },
     { scenario: 'duplicate source ports', file: 'client/vite.config.ts', setting: 'server.port' },
+    { scenario: 'inline duplicate port', file: 'client/vite.config.ts', setting: 'server.port' },
+    { scenario: 'port expression', file: 'client/vite.config.ts', setting: 'server.port' },
+    { scenario: 'multiline port expression', file: 'client/vite.config.ts', setting: 'server.port' },
   ])('reports template errors before any writes: $scenario', async ({ scenario, file, setting }) => {
     const deps: Partial<InitDependencies> = { fetchTemplate: async (source) => {
       const snapshot = await fetchTemplate(git, source);
@@ -189,6 +192,9 @@ describe('local init integration', () => {
       let content: string;
       if (scenario === 'invalid source port') content = original.content.toString().replace('port: 5173', 'port: 65536');
       else if (scenario === 'duplicate source ports') content = original.content.toString().replace('port: 5173', 'port: 5165');
+      else if (scenario === 'inline duplicate port') content = original.content.toString().replace('port: 5173', 'port: 5173,\n    host: true, port: 9999');
+      else if (scenario === 'port expression') content = original.content.toString().replace('port: 5173', 'port: 5173 + 1');
+      else if (scenario === 'multiline port expression') content = original.content.toString().replace('port: 5173', 'port: 5173 // continued\n      + 1');
       else if (scenario === 'invalid JSON') content = '{"sentinel-secret":';
       else {
         const value = JSON.parse(original.content.toString());
