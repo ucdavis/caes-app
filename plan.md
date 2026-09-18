@@ -8,7 +8,7 @@ The V1 Init MVP is intentionally narrow: create/customize a new app from the def
 
 Default posture: automate foundation setup, make every mutation previewable, keep secrets out of persisted project metadata, and avoid sample-code cleanup in `init`.
 
-Template compatibility reviewed against `ucdavis/web-app-template` commit `bd1e761` on September 15, 2026. This is a review baseline, not a pinned template source; init still resolves the current default branch. MVP init may configure an existing user sign-in client ID locally, while Entra app registration management remains post-MVP.
+Template compatibility reviewed against `ucdavis/web-app-template` commit `c835941369b5857468e940b6440ea616139e9272` on September 17, 2026, covering all 14 commits since `bd1e761`. Remote `main` matched the reviewed checkout. This is a review baseline, not a pinned template source; init still resolves the current default branch. MVP init may configure an existing user sign-in client ID locally, while Entra app registration management remains post-MVP.
 
 ## Implementation Roadmap
 
@@ -175,12 +175,13 @@ Implementation notes:
 ### MVP Local Auth Configuration
 
 - A supplied client ID fills or updates `Auth__ClientId` in `server/.env`; validate it as a nonzero GUID. Leave the committed `Auth:ClientId` placeholder unchanged and do not write the local override into `.caes-app.json`.
-- Create a missing `.env` from the resolved template revision's `server/.env.example` with mode `0600`; missing examples conflict before application. Fill telemetry service name/namespace from app ID, SMTP/notification names from display name, notification URL from the client port, and DB_CONNECTION from customized development settings. Retain all other defaults, placeholders, comments, ordering, and line endings. Preserve an existing `.env` byte-for-byte when auth is omitted, without backfilling; an explicitly supplied ID updates only its assignment. Identical contents are `skipped`; ambiguous auth edits conflict. Use DotEnv.Core-compatible literals and reject unrepresentable values without exposing their contents.
+- Create a missing `.env` from the resolved template revision's `server/.env.example` with mode `0600`; missing examples conflict before application. For active assignments present in that revision, fill telemetry service name/namespace from app ID, SMTP/notification names from display name, notification URL from the client port, and DB_CONNECTION from customized development settings. Preserve commented examples verbatim without activating or backfilling optional settings. Retain all other defaults, placeholders, comments, ordering, and line endings. Preserve an existing `.env` byte-for-byte when auth is omitted, without backfilling; an explicitly supplied ID updates only its assignment. Identical contents are `skipped`; ambiguous auth edits conflict. Use DotEnv.Core-compatible literals and reject unrepresentable values without exposing their contents.
 - Verify that the destination is git-ignored and, when Git exists, untracked even when auth is omitted. Unsafe destinations become preview conflicts. Always include the dotenv operation in previews and recheck destinations after confirmation; dry runs remain read-only.
 - Show only operation status, safe creation/preservation metadata, and an explicitly supplied auth assignment in previews. Never display full `.env` contents in human output, JSON, logs, or errors.
 - Explain the template's configuration order: base app settings, environment-specific app settings, `.env`, `.env.<environment>`, then process environment variables, with later sources winning. Do not modify the higher-precedence local sources.
 - Include manual sign-in setup instructions and callback URLs derived from the final client/server ports, callback path, and IIS Express configuration. The supplied ID must belong to the user sign-in app registration, not the GitHub deployment managed identity.
 - Successful init means scaffolding completed. Report remaining manual auth setup in both human and JSON output without failing init or claiming runtime readiness. Creating or updating the Entra registration remains post-MVP.
+- The template also offers a manually selected Docker sandbox with fictional local users and no Entra registration requirement. This does not establish Entra/cloud auth readiness or change init's normal sign-in instructions. Preserve the template's local-auth and seeding defaults; init does not enable either feature.
 
 ## CLI Technical Stack
 
@@ -237,9 +238,10 @@ Developers are responsible for installing and authenticating prerequisite tools.
   - Template compatibility checks apply to the source template used by `init` and to later managed projects that contain the required contract files.
   - Existing apps created from `web-app-template` before `caes-app` are unsupported for automation unless manually migrated by a future, separate migration feature.
 - MVP required template files:
-  - Root files: `package.json`, `app.sln`, `README.customization.md`, and `.gitignore` with coverage for `server/.env`.
+  - Root files: `package.json`, `package-lock.json`, `app.sln`, `README.customization.md`, and `.gitignore` with coverage for `server/.env`.
   - Client files: `client/package.json`, `client/vite.config.ts`, and `client/package-lock.json`.
   - Server files: `server/appsettings.json`, `server/appsettings.Development.json`, `server/server.csproj`, and `server/Properties/launchSettings.json`.
+  - `server/.env.example` is required when creating a missing local `.env`; preserve the template's ignore exception that keeps the example available for copying.
   - Dev container files: `.devcontainer/devcontainer.json` and `.devcontainer/docker-compose.yml`.
   - Azure files may be copied as template content, but MVP `init` does not automate Azure deployment.
 - Post-MVP required template files for deployment automation:
@@ -357,6 +359,7 @@ Unreadable GitHub secrets use these states: `missing`, `present-unknown`, `repla
 ## Azure Configuration and Deployment Lifecycle
 
 - Before the first package deployment, create/configure the GitHub environment and user sign-in settings, run the OIDC bootstrap, run the manual Configure Azure workflow, add the resulting App Service hostname's callback URI to the user sign-in registration, and then deploy the app package. Bootstrap supplies the Azure identity/resource-group variables needed by Configure Azure.
+- Before the first production package deployment, manually establish App Service-to-SQL connectivity using suitable outbound-address firewall rules or private connectivity with routing/DNS. The template enables its broad Azure-services SQL firewall rule only in test and provisions neither private endpoints nor App Service VNet integration. Startup applies existing migrations and `/health` checks SQL; infrastructure success alone does not establish runtime readiness. Network provisioning remains outside this CLI plan.
 - Configure Azure verifies the application resource group exists, applies Bicep infrastructure, and applies runtime App Service settings using individual variables and secrets from the selected GitHub environment. OIDC bootstrap creates the resource group; Configure Azure does not.
 - Routine CI/CD package deployments use existing infrastructure and configuration. Run Configure Azure again after Bicep, deployment settings, or GitHub environment variables/secrets change; wait for it to finish before deploying the package. CLI commands report this follow-up without dispatching workflows automatically.
 - OIDC bootstrap creates a user-assigned managed identity and environment-scoped GitHub federated credential. By default it grants Contributor on the application resource group and Website Contributor on the exact shared App Service plan. Microsoft Graph/app-registration permissions are required for `azure auth-app`, not this managed-identity bootstrap.
@@ -399,7 +402,8 @@ Deployment settings automation is post-MVP. The trusted template now provides th
 - Manifest validity: schema version, required fields, supported managed-project shape, and unknown-field preservation compatibility.
 - Environment readiness: required env vars/secrets by environment and configuration/local-deployment context, including resolved contract settings and hand-authored infrastructure inputs, with remediation hints for missing values. Report the required Configure Azure follow-up after changes.
 - Azure readiness: selected subscription/tenant matches the manifest, application resource groups and selected shared plans exist, managed identity/federation/RBAC match current bootstrap inputs at both scopes, deployments can be found by recorded name, and Bicep files build. Check consistent shared-plan selection and distinguish the web app's plan-derived region from other resource locations.
-- Runtime configuration readiness: auth, notification, SMTP, and OTLP settings are present enough for the selected scenario without exposing values. Check effective auth independently of catalog validation: `AUTH_CLIENT_ID` is optional in the reviewed catalog, but the server rejects a missing or placeholder `Auth:ClientId`.
+- Runtime configuration readiness: auth, notification, SMTP, and OTLP settings are present enough for the selected scenario without exposing values; unused optional email/telemetry settings are not blockers. Check effective auth independently of catalog validation: `AUTH_CLIENT_ID` is optional in the reviewed catalog, but Entra mode rejects a missing or placeholder `Auth:ClientId`. Explicit local auth bypasses that requirement only in Development and is rejected in other environments. Sandbox readiness must not count as verified Entra/cloud sign-in.
+- Sandbox diagnostics use its separate Compose project and app/inbox ports, not manifest development ports. Check project/port isolation and distinguish opt-in sample seeding from startup migration behavior. Production runtime diagnostics also need SQL connectivity, not merely provisioned infrastructure.
 - Distinguish local configuration readiness, including `.env` precedence, from cloud configuration applied to App Service. A valid local client ID or configured GitHub variable does not by itself establish cloud runtime readiness. Never automatically upload local overrides.
 - Output format: concise human output by default and redacted structured results with `--json`.
 
