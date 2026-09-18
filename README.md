@@ -117,11 +117,14 @@ Initialization always creates a missing `server/.env` from the resolved template
 On Windows, files inherit directory access-control permissions (ACLs); the CLI
 does not change those ACLs or guarantee owner-only access. Use a directory with
 appropriate access restrictions for local configuration.
-It fills in the app's telemetry
-identity, display name, development database connection, notification URL, and any
-supplied auth client ID. Other example defaults, comments, and placeholders remain
-in place; configure the remaining auth, telemetry, and SMTP values before using
-those services. A missing example is a conflict when `.env` needs to be created.
+For active assignments in the example, it fills in the app's telemetry identity,
+display name, development database connection, notification URL, and any supplied
+auth client ID. Commented examples remain unchanged, including their placeholders
+and example URLs. The current template leaves optional telemetry and
+SMTP/notification examples commented out; init does not enable them. Review those
+values before enabling the services. The app's committed SMTP/notification names
+and development notification URL are customized separately. A missing example is
+a conflict when `.env` needs to be created.
 
 An existing `.env` is preserved byte-for-byte when auth is omitted, without
 backfilling settings. An explicit `--auth-client-id` edits only `Auth__ClientId`;
@@ -141,6 +144,15 @@ IIS Express settings. Use the **user sign-in app registration**, not a GitHub
 deployment managed identity. Configuration precedence is base app settings,
 environment-specific app settings, `.env`, `.env.<environment>`, then process
 environment variables; later sources win and can change the effective callback URL.
+
+The template also includes a Docker sandbox for investigation with fictional local
+users, seeded data, and Mailpit, without an Entra registration. Follow the generated
+app's `docs/SANDBOX.md`: choose a unique `SANDBOX_PROJECT` for each checkout, distinct
+from the regular `<app-id>_devcontainer` project. Its `SANDBOX_PORT` and
+`SANDBOX_MAIL_PORT` are independent of init's development ports. Init copies the
+sandbox configuration unchanged and does not start it. Normal development keeps
+`Auth__UseLocal` and `DevelopmentData__SeedOnStartup` false; sample seeding is opt-in,
+while existing migrations still apply at startup.
 
 ## Development and verification
 
